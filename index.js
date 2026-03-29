@@ -15,6 +15,10 @@ const useSupabaseAuthState = require('./supabaseAuth');
 // Setup memory cache to avoid performance/duplicate issues internally for Baileys
 const msgRetryCounterCache = new NodeCache();
 
+// --- ANTI-DOUBLON CACHE ---
+const reactedStatusCache = new Set();
+const CACHE_MAX_SIZE = 1000;
+
 let isActivelyLiking = true; // Global toggle for liking statuses
 let fixedEmoji = null; // Forces a specific emoji instead of randomly picking
 
@@ -280,6 +284,17 @@ const botStartTime = Math.floor(Date.now() / 1000); // Record startup time to ig
             if (remoteJid === 'status@broadcast') {
                 if (!isActivelyLiking) return; // Stop if disabled via command
 
+                // --- ANTI-DOUBLON ---
+                const statusId = msg.key.id;
+                if (reactedStatusCache.has(statusId)) return; // Empêche le bot de réagir au même statut si Baileys l'émet en double
+                
+                reactedStatusCache.add(statusId);
+                if (reactedStatusCache.size > CACHE_MAX_SIZE) {
+                    const firstItem = reactedStatusCache.values().next().value;
+                    reactedStatusCache.delete(firstItem);
+                }
+                // --------------------
+
                 let senderJid = participantJid || msg.key.participant;
 
                 // Handle the bot user's own statuses
@@ -311,7 +326,8 @@ const botStartTime = Math.floor(Date.now() / 1000); // Record startup time to ig
                     }
                 };
 
-                // Add an asynchronous delay simulating human reading time
+                // Add an asynchronous delay simulating human reading time (2 to 6 secondes)
+                const delayMs = Math.floor(Math.random() * (6000 - 2000 + 1)) + 2000;
                 setTimeout(async () => {
                     try {
                         // 1. Mark status as read (so the sender sees you viewed it)
@@ -319,7 +335,7 @@ const botStartTime = Math.floor(Date.now() / 1000); // Record startup time to ig
 
                         // 2. Send the reaction directly to the sender
                         await socket.sendMessage(senderJid, reactionMessage);
-                        console.log(`[REACTION] Successfully reacted with ${reactionEmojiToUse} to +${senderPhoneNumber}`);
+                        console.log(`[REACTION] Successfully reacted with ${reactionEmojiToUse} to +${senderPhoneNumber} (Délai: ${(delayMs/1000).toFixed(1)}s)`);
 
                         // 3. Optional auto-reply directly to their personal chat using senderJid
                         if (config.autoReplyMessage && config.autoReplyMessage.trim() !== "") {
@@ -330,7 +346,7 @@ const botStartTime = Math.floor(Date.now() / 1000); // Record startup time to ig
                     } catch (err) {
                         console.error(`[ERROR] Failed to react or reply to +${senderPhoneNumber}:`, err.message);
                     }
-                }, 2000); // 2 second delay
+                }, delayMs);
             }
         } catch (error) {
             console.error('[ERROR] Unexpected error in messages.upsert:', error.message);
