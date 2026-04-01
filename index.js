@@ -81,9 +81,9 @@ async function connectToWhatsApp() {
         msgRetryCounterCache,
         generateHighQualityLinkPreview: true,
         markOnlineOnConnect: false,
-        keepAliveIntervalMs: 30_000, // Ping WhatsApp every 30s to maintain connection
-        connectTimeoutMs: 60_000,    // 60s timeout before giving up on connection
-        retryRequestDelayMs: 2000    // 2s between retry requests
+        keepAliveIntervalMs: 60_000, // Ping WhatsApp every 60s to maintain connection
+        connectTimeoutMs: 120_000,    // 120s timeout before giving up on connection
+        retryRequestDelayMs: 3000    // 3s between retry requests
     });
 
     // Handle pairing code login flow
@@ -113,7 +113,7 @@ async function connectToWhatsApp() {
     socket.ev.on('creds.update', saveCreds);
 
     // Track connection state
-    socket.ev.on('connection.update', (update) => {
+    socket.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr && !config.usePairingCode) {
@@ -128,7 +128,7 @@ async function connectToWhatsApp() {
             console.log('[INFO] Connection closed, code:', statusCode, '| Reconnecting:', shouldReconnect);
 
             if (shouldReconnect) {
-                const delay = 5_000;
+                const delay = isConflict ? 30_000 : 10_000;
                 console.log(`[INFO] Reconnexion dans ${delay / 1000} secondes${isConflict ? ' (conflit de session détecté)' : ''}...`);
                 setTimeout(() => connectToWhatsApp(), delay);
             } else {
@@ -424,4 +424,4 @@ setInterval(async () => {
     } catch (err) {
         console.log(`[AUTO-PING] Échec du ping interne: ${err.message}`);
     }
-}, 5 * 60 * 1000); // 5 minutes
+}, 4 * 60 * 1000); // 4 minutes
