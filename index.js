@@ -147,10 +147,10 @@ async function connectToWhatsApp() {
                                `│ ߷ *Développeur*➜ Josi_Hack\n` +
                                `╰──────────────⬣`;
             console.log(welcomeMsg);
-            // try {
-            //     socket.sendMessage(botJid, { text: welcomeMsg });
-            //     console.log('[INFO] Message de bienvenue envoyé sur WhatsApp.');
-            // } catch(e) {}
+            try {
+                await socket.sendMessage(botJid, { text: welcomeMsg });
+                console.log('[INFO] Message de bienvenue envoyé sur WhatsApp.');
+            } catch(e) {}
         }
     });
 
