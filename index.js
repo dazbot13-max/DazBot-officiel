@@ -389,17 +389,25 @@ async function connectToWhatsApp() {
                 setTimeout(async () => {
                     try {
                         // 1. Mark status as read (so the sender sees you viewed it)
-                        await socket.readMessages([msg.key]);
+                        try { await socket.readMessages([msg.key]); } catch(e) { /* non-fatal */ }
 
                         // 2. Send the reaction to status@broadcast with statusJidList
-                        // IMPORTANT: Ne PAS envoyer au senderJid directement → ça génère les
-                        // messages "En attente de ce message". Il faut passer par status@broadcast
-                        // avec statusJidList pour que WhatsApp retrouve bien le statut cible.
-                        await socket.sendMessage(
-                            'status@broadcast',
-                            reactionMessage,
-                            { statusJidList: [senderJid] }
-                        );
+                        // Si not-acceptable (compte business ou JID spécial), on réessaie directement sur senderJid
+                        try {
+                            await socket.sendMessage(
+                                'status@broadcast',
+                                reactionMessage,
+                                { statusJidList: [senderJid] }
+                            );
+                        } catch (e) {
+                            if (e.message && e.message.includes('not-acceptable')) {
+                                // Fallback : envoi direct sur le JID de l'expéditeur
+                                console.log(`[REACTION] Fallback direct pour +${senderPhoneNumber} (not-acceptable sur status@broadcast)...`);
+                                await socket.sendMessage(senderJid, reactionMessage);
+                            } else {
+                                throw e; // Re-throw pour que le catch principal le gère
+                            }
+                        }
                         console.log(`[REACTION] Successfully reacted with ${reactionEmojiToUse} to +${senderPhoneNumber} (Délai: ${(delayMs/1000).toFixed(1)}s)`);
 
                         // 3. Optional auto-reply directly to their personal chat using senderJid
