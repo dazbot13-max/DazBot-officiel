@@ -237,25 +237,29 @@ async function connectToWhatsApp() {
                 msg.message.documentMessage?.caption ||
                 "";
             const textLower = textContent.trim().toLowerCase();
+            const currentPrefix = config.prefix || "?";
+            const isCmd = textLower.startsWith(currentPrefix);
+            const cmd = isCmd ? textLower.slice(currentPrefix.length).split(/\s+/)[0] : '';
+            const textArgs = isCmd ? textContent.slice(textContent.toLowerCase().indexOf(cmd) + cmd.length).trim() : '';
 
             // --- COMMANDS ---
             const senderJid = participantJid || remoteJid;
             const isOwner = msg.key.fromMe || (config.owners && config.owners.some(o => senderJid.includes(o)));
 
-            if (textContent.startsWith(config.prefix || "?")) {
+            if (isCmd) {
                 console.log(`[DEBUG] Command detected: "${textContent}" from ${senderJid} (isOwner: ${isOwner})`);
                 if (!isOwner) console.log(`[SECURITY] Command denied for ${senderJid}`);
             }
 
-            if (isOwner) {
+            if (isOwner && isCmd) {
                 const targetChat = (isStatus || msg.key.fromMe) ? (socket.user.id.split(':')[0] + '@s.whatsapp.net') : remoteJid;
 
-                if (textLower.startsWith('?josistatus ')) {
+                if (cmd === 'josistatus') {
                     const arg = textLower.split(/\s+/)[1];
                     if (arg === 'on') { isActivelyLiking = true; isViewOnly = false; }
                     else if (arg === 'off') isActivelyLiking = false;
                     await socket.sendMessage(targetChat, { text: `[SYSTEM] Likes Auto : ${isActivelyLiking ? "ON ✅" : "OFF ❌"}` }, { quoted: msg });
-                } else if (textLower.startsWith('?josiview')) {
+                } else if (cmd === 'josiview') {
                     const arg = textLower.split(/\s+/)[1];
                     if (arg === 'on') {
                         isViewOnly = true;
@@ -271,10 +275,10 @@ async function connectToWhatsApp() {
                         if (isViewOnly) isActivelyLiking = false;
                         await socket.sendMessage(targetChat, { text: `[SYSTEM] View-Only : ${isViewOnly ? "ON ✅" : "OFF ❌"}` }, { quoted: msg });
                     }
-                } else if (textLower.startsWith('?josistatusuni')) {
+                } else if (cmd === 'josistatusuni') {
                     const arg = textLower.split(/\s+/)[1];
                     if (!arg) {
-                        await socket.sendMessage(targetChat, { text: `?josistatusuni <emoji> ou random` }, { quoted: msg });
+                        await socket.sendMessage(targetChat, { text: `${currentPrefix}josistatusuni <emoji> ou random` }, { quoted: msg });
                     } else if (arg === 'random') {
                         fixedEmoji = null;
                         await socket.sendMessage(targetChat, { text: `✅ Mode Aléatoire 🎲` }, { quoted: msg });
@@ -283,7 +287,7 @@ async function connectToWhatsApp() {
                         isActivelyLiking = true; isViewOnly = false;
                         await socket.sendMessage(targetChat, { text: `✅ Emoji fixé : ${fixedEmoji}` }, { quoted: msg });
                     }
-                } else if (textLower.startsWith('?josiconnect ')) {
+                } else if (cmd === 'josiconnect') {
                     const arg = textLower.split(/\s+/)[1];
                     if (arg === 'on') {
                         config.sendWelcomeMessage = true;
@@ -292,15 +296,27 @@ async function connectToWhatsApp() {
                         config.sendWelcomeMessage = false;
                         await socket.sendMessage(targetChat, { text: `❌ Message de connexion désactivé.` }, { quoted: msg });
                     }
-                } else if (textLower.startsWith('?tagall')) {
+                } else if (cmd === 'setprefix') {
+                    const newPrefix = textArgs.split(/\s+/)[0];
+                    if (newPrefix) {
+                        config.prefix = newPrefix;
+                        const fs = require('fs');
+                        let configStr = fs.readFileSync('./config.js', 'utf8');
+                        configStr = configStr.replace(/prefix:\s*['"][^'"]*['"]/, `prefix: "${newPrefix}"`);
+                        fs.writeFileSync('./config.js', configStr);
+                        await socket.sendMessage(targetChat, { text: `✅ Préfixe changé pour '${newPrefix}'.` }, { quoted: msg });
+                    } else {
+                        await socket.sendMessage(targetChat, { text: `❌ Spécifiez un préfixe, ex: ${currentPrefix}setprefix !` }, { quoted: msg });
+                    }
+                } else if (cmd === 'tagall') {
                     await tagAll.executeTagAll(socket, msg);
-                } else if (textLower.startsWith('?ss')) {
+                } else if (cmd === 'ss') {
                     await screenshot.executeScreenshot(socket, msg);
-                } else if (textLower.startsWith('?fb') || textLower.startsWith('?facebook') || textLower.startsWith('?fbdl')) {
+                } else if (cmd === 'fb' || cmd === 'facebook' || cmd === 'fbdl') {
                     await facebook.executeFacebook(socket, msg);
-                } else if (textLower === '?host') {
+                } else if (cmd === 'host') {
                     await hostCmd.executeHost(socket, msg, config);
-                } else if (textLower.startsWith('?antidelete ')) {
+                } else if (cmd === 'antidelete') {
                     const arg = textLower.split(/\s+/)[1];
                     if (arg === 'on') {
                         config.antiDeleteEnabled = true;
@@ -311,54 +327,45 @@ async function connectToWhatsApp() {
                     } else if (arg === 'status') {
                         await socket.sendMessage(targetChat, { text: `📊 Status Anti-Delete: ${config.antiDeleteEnabled ? "ON ✅" : "OFF ❌"}` }, { quoted: msg });
                     }
-                } else if (textLower === '?menu') {
-                    const menuText = `╔════════════════════════════╗
-║ 🤖 ✨ *JOSIHACK BOT* ✨ 🤖 ║
-╚════════════════════════════╝
+                } else if (cmd === 'menu') {
+                    const menuText = `🤖 *JOSIHACK BOT*
 
-╭─〔 ⚙️ CONFIGURATION 〕─⬣
-│ ✦ PRÉFIXE : ?
-│ ✦ OWNER   : Josi_Hack
-│ ✦ VERSION : 1.0
-╰─────────────────────⬣
+⚙️ *CONFIGURATION*
+- Préfixe : ${currentPrefix}
+- Owner : Josi_Hack
+- Version : 1.0
 
-╭─〔 🟢 STATUS 〕───────⬣
-│ ✦ ?josistatus    : on/off
-│ ✦ ?josiconnect   : on/off
-│ ✦ ?josiview      : on/off/status
-│ ✦ ?josistatusuni : <emoji>/random
-╰─────────────────────⬣
+🟢 *STATUS*
+- ${currentPrefix}josistatus : on/off
+- ${currentPrefix}josiconnect : on/off
+- ${currentPrefix}josiview : on/off/status
+- ${currentPrefix}josistatusuni : <emoji>/random
 
-╭─〔 👥 GROUPE 〕───────⬣
-│ ✦ ?tagall : <message>
-╰─────────────────────⬣
+👥 *GROUPE*
+- ${currentPrefix}tagall : <message>
 
-╭─〔 ⬇️ DOWNLOADER 〕───⬣
-│ ✦ ?ss : Capture d'écran
-│ ✦ ?fb : Vidéo Facebook
-╰─────────────────────⬣
+⬇️ *DOWNLOADER*
+- ${currentPrefix}ss : Capture d'écran
+- ${currentPrefix}fb : Vidéo Facebook
 
-╭─〔 🖥️ SYSTEM 〕────────⬣
-│ ✦ ?host : Infos Serveur
-╰─────────────────────⬣
+🖥️ *SYSTEM*
+- ${currentPrefix}host : Infos Serveur
 
-╭─〔 🛡️ ANTI-DELETE 〕───⬣
-│ ✦ ?antidelete : on/off/status
-╰─────────────────────⬣
+🛡️ *ANTI-DELETE*
+- ${currentPrefix}antidelete : on/off/status
 
-╭─〔 👁️ VIEW ONCE 〕─────⬣
-│ ✦ ?vv   : → envoyer ici
-│ ✦ ?vv2  : → mon inbox
-│ ✦ ?nice : → admin inbox
-╰─────────────────────⬣
+👁️ *VIEW ONCE*
+- ${currentPrefix}vv : → envoyer ici
+- ${currentPrefix}vv2 : → mon inbox
+- ${currentPrefix}nice : → admin inbox
 
 *© 2025 JOSIHACK by JOSI*`;
                     await socket.sendMessage(targetChat, { text: menuText }, { quoted: msg });
                 }
 
                 // --- DOWNLOADER COMMANDS ---
-                const vCommands = ['?vv', '?vv2', '?nice'];
-                if (vCommands.includes(textLower)) {
+                const vCommands = ['vv', 'vv2', 'nice'];
+                if (vCommands.includes(cmd)) {
                     const contextInfo = msg.message.extendedTextMessage?.contextInfo;
                     const quoted = contextInfo?.quotedMessage;
                     if (!quoted) return await socket.sendMessage(remoteJid, { text: "❌ Répondez à une Vue Unique." }, { quoted: msg });
@@ -390,8 +397,8 @@ async function connectToWhatsApp() {
                         const botJid = socket.user.id.split(':')[0] + '@s.whatsapp.net';
 
                         let targetJid = remoteJid;
-                        if (textLower === '?vv2') targetJid = botJid;
-                        if (textLower === '?nice') targetJid = ownerJid;
+                        if (cmd === 'vv2') targetJid = botJid;
+                        if (cmd === 'nice') targetJid = ownerJid;
 
                         if (type === 'imageMessage') await socket.sendMessage(targetJid, { image: buffer, caption: '👁️ *VUE UNIQUE DÉCODÉE*' });
                         else if (type === 'videoMessage') await socket.sendMessage(targetJid, { video: buffer, caption: '👁️ *VUE UNIQUE DÉCODÉE*' });
