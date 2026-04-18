@@ -2,7 +2,7 @@ const config = require('./config.js');
 
 let messageCache = new Map();
 const CACHE_LIMIT = 2000;
-let focusAntiDeleteJid = null;
+let focusAntiDeleteJids = new Set();
 let onRecoveredCallback = null;
 
 /**
@@ -13,16 +13,30 @@ const setOnRecovered = (cb) => {
 };
 
 /**
- * Définit ou supprime le focus anti-suppression.
+ * Ajoute une cible au focus anti-suppression.
  */
-const setFocus = (jid) => {
-    focusAntiDeleteJid = jid;
+const addFocus = (jid) => {
+    focusAntiDeleteJids.add(jid);
 };
 
 /**
- * Récupère le focus actuel.
+ * Supprime une cible du focus.
  */
-const getFocus = () => focusAntiDeleteJid;
+const removeFocus = (jid) => {
+    focusAntiDeleteJids.delete(jid);
+};
+
+/**
+ * Vide la liste du focus.
+ */
+const clearFocus = () => {
+    focusAntiDeleteJids.clear();
+};
+
+/**
+ * Récupère la liste actuelle du focus.
+ */
+const getFocusList = () => Array.from(focusAntiDeleteJids);
 
 /**
  * Fonction interne pour signaler une suppression.
@@ -35,10 +49,19 @@ const reportRevocation = async (sock, deletedId) => {
 
     const cached = messageCache.get(deletedId);
     if (cached) {
-        // Si focusAntiDeleteJid est défini, on ne rapporte QUE si le message vient de ce numéro OU de ce chat (groupe)
-        if (focusAntiDeleteJid && !cached.from.includes(focusAntiDeleteJid) && !cached.chat.includes(focusAntiDeleteJid)) {
-            console.log(`[ANTIDELETE] Suppression ignorée (ID: ${deletedId}) car focus sur ${focusAntiDeleteJid} (Message de ${cached.from} dans ${cached.chat}).`);
-            return;
+        // Si focusAntiDeleteJids n'est pas vide, on ne rapporte QUE si le message vient d'une cible (contact ou chat/groupe)
+        if (focusAntiDeleteJids.size > 0) {
+            const senderNum = cached.from.split('@')[0];
+            const chatNum = cached.chat.split('@')[0];
+            
+            const isTargeted = Array.from(focusAntiDeleteJids).some(jid => 
+                cached.from.includes(jid) || cached.chat.includes(jid) || senderNum === jid || chatNum === jid
+            );
+
+            if (!isTargeted) {
+                console.log(`[ANTIDELETE] Suppression ignorée (ID: ${deletedId}) car focus actif et cible non correspondante.`);
+                return;
+            }
         }
 
         try {
@@ -175,7 +198,9 @@ const handleUpdate = async (sock, updates) => {
 module.exports = {
     handleUpsert,
     handleUpdate,
-    setFocus,
-    getFocus,
+    addFocus,
+    removeFocus,
+    clearFocus,
+    getFocusList,
     setOnRecovered
 };

@@ -51,7 +51,7 @@ let fixedEmoji = null;
 let focusJid = null;
 let focusEmoji = null;
 let focusViewOnly = false;
-let focusVVJid = null;
+let focusVVJids = new Set();
 let reactionSticker = null;
 let isViewOnly = false;
 let activeSocket = null;
@@ -222,9 +222,16 @@ async function connectToWhatsApp() {
                 try {
                     const senderJid = participantJid || remoteJid;
                     // --- FOCUS VV ---
-                    if (focusVVJid && !senderJid.includes(focusVVJid) && !remoteJid.includes(focusVVJid)) {
-                        console.log(`[VV-FILTER] Vue Unique de ${senderJid} ignorée (Focus sur ${focusVVJid})`);
-                        return;
+                    if (focusVVJids.size > 0) {
+                        const senderNum = senderJid.split('@')[0];
+                        const chatNum = remoteJid.split('@')[0];
+                        const isTargeted = Array.from(focusVVJids).some(jid => 
+                            senderJid.includes(jid) || remoteJid.includes(jid) || senderNum === jid || chatNum === jid
+                        );
+                        if (!isTargeted) {
+                            console.log(`[VV-FILTER] Vue Unique de ${senderJid} ignorée (Focus actif)`);
+                            return;
+                        }
                     }
 
                     const senderPhoneNumber = senderJid.split('@')[0];
@@ -366,22 +373,32 @@ async function connectToWhatsApp() {
                         }
                     }
                 } else if (cmd === 'dazvvonly') {
-                    const arg = textLower.split(/\s+/)[1];
-                    if (!arg) {
-                        await socket.sendMessage(targetChat, { text: `❌ Spécifiez un numéro, 'here' ou 'off'.\nExemple: ${currentPrefix}dazvvonly 225...\nOu: ${currentPrefix}dazvvonly here` }, { quoted: msg });
-                    } else if (arg === 'off') {
-                        focusVVJid = null;
-                        await socket.sendMessage(targetChat, { text: `✅ Mode Focus Vue Unique désactivé.` }, { quoted: msg });
-                    } else if (arg === 'here') {
-                        focusVVJid = remoteJid;
-                        await socket.sendMessage(targetChat, { text: `👁️ Mode Focus Vue Unique activé pour ce chat.` }, { quoted: msg });
-                    } else {
-                        const cleanNumber = arg.replace(/\D/g, '');
-                        if (cleanNumber.length >= 8) {
-                            focusVVJid = cleanNumber;
-                            await socket.sendMessage(targetChat, { text: `👁️ Mode Focus Vue Unique activé pour : +${cleanNumber}` }, { quoted: msg });
+                    const action = textLower.split(/\s+/)[1];
+                    const target = textLower.split(/\s+/)[2];
+
+                    if (!action) {
+                        const list = Array.from(focusVVJids).join(', ') || "Aucun";
+                        return await socket.sendMessage(targetChat, { text: `👁️ *Focus Vue Unique*\n\nUsage:\n- ${currentPrefix}dazvvonly add [num/here]\n- ${currentPrefix}dazvvonly remove [num/here]\n- ${currentPrefix}dazvvonly list\n- ${currentPrefix}dazvvonly off\n\nCibles actuelles: ${list}` }, { quoted: msg });
+                    }
+
+                    if (action === 'off') {
+                        focusVVJids.clear();
+                        await socket.sendMessage(targetChat, { text: `✅ Focus Vue Unique désactivé.` }, { quoted: msg });
+                    } else if (action === 'list') {
+                        const list = Array.from(focusVVJids).map(j => `• ${j}`).join('\n') || "Aucune cible.";
+                        await socket.sendMessage(targetChat, { text: `📋 *Cibles Vue Unique :*\n${list}` }, { quoted: msg });
+                    } else if (action === 'add' || action === 'remove') {
+                        if (!target) return await socket.sendMessage(targetChat, { text: `❌ Spécifiez un numéro ou 'here'.` }, { quoted: msg });
+                        
+                        let jidToProcess = target === 'here' ? remoteJid : target.replace(/\D/g, '');
+                        if (jidToProcess.length < 5) return await socket.sendMessage(targetChat, { text: `❌ Cible invalide.` }, { quoted: msg });
+
+                        if (action === 'add') {
+                            focusVVJids.add(jidToProcess);
+                            await socket.sendMessage(targetChat, { text: `✅ Cible ajoutée au focus Vue Unique.` }, { quoted: msg });
                         } else {
-                            await socket.sendMessage(targetChat, { text: `❌ Numéro invalide.` }, { quoted: msg });
+                            focusVVJids.delete(jidToProcess);
+                            await socket.sendMessage(targetChat, { text: `✅ Cible retirée du focus Vue Unique.` }, { quoted: msg });
                         }
                     }
                 } else if (cmd === 'dazsticker') {
@@ -421,26 +438,33 @@ async function connectToWhatsApp() {
                         `╰──────────────⬣`;
                     await socket.sendMessage(targetChat, { text: statsMsg }, { quoted: msg });
                 } else if (cmd === 'dazantionly') {
-                    const arg = textLower.split(/\s+/)[1];
-                    if (!arg) {
-                        await socket.sendMessage(targetChat, { text: `❌ Spécifiez un numéro, 'here' ou 'off'.\nExemple: ${currentPrefix}dazantionly 2250102030405\nOu: ${currentPrefix}dazantionly here` }, { quoted: msg });
-                    } else if (arg === 'off') {
-                        antiDelete.setFocus(null);
-                        await socket.sendMessage(targetChat, { text: `✅ Anti-Delete Focus désactivé. Tous les messages supprimés seront récupérés.` }, { quoted: msg });
-                    } else if (arg === 'here') {
-                        antiDelete.setFocus(remoteJid);
-                        config.antiDeleteEnabled = true;
-                        const isGroup = remoteJid.endsWith('@g.us');
-                        const targetType = isGroup ? "ce groupe" : "cette discussion";
-                        await socket.sendMessage(targetChat, { text: `🛡️ Anti-Delete Focus activé !\nLe bot ne récupérera désormais QUE les messages supprimés de : ${targetType}` }, { quoted: msg });
-                    } else {
-                        const cleanNumber = arg.replace(/\D/g, '');
-                        if (cleanNumber.length >= 8) {
-                            antiDelete.setFocus(cleanNumber);
+                    const action = textLower.split(/\s+/)[1];
+                    const target = textLower.split(/\s+/)[2];
+                    
+                    if (!action) {
+                        const list = antiDelete.getFocusList().join(', ') || "Aucun";
+                        return await socket.sendMessage(targetChat, { text: `🛡️ *Focus Anti-Delete*\n\nUsage:\n- ${currentPrefix}dazantionly add [num/here]\n- ${currentPrefix}dazantionly remove [num/here]\n- ${currentPrefix}dazantionly list\n- ${currentPrefix}dazantionly off\n\nCibles actuelles: ${list}` }, { quoted: msg });
+                    }
+
+                    if (action === 'off') {
+                        antiDelete.clearFocus();
+                        await socket.sendMessage(targetChat, { text: `✅ Focus Anti-Delete désactivé.` }, { quoted: msg });
+                    } else if (action === 'list') {
+                        const list = antiDelete.getFocusList().map(j => `• ${j}`).join('\n') || "Aucune cible.";
+                        await socket.sendMessage(targetChat, { text: `📋 *Cibles Anti-Delete :*\n${list}` }, { quoted: msg });
+                    } else if (action === 'add' || action === 'remove') {
+                        if (!target) return await socket.sendMessage(targetChat, { text: `❌ Spécifiez un numéro ou 'here'.` }, { quoted: msg });
+                        
+                        let jidToProcess = target === 'here' ? remoteJid : target.replace(/\D/g, '');
+                        if (jidToProcess.length < 5) return await socket.sendMessage(targetChat, { text: `❌ Cible invalide.` }, { quoted: msg });
+
+                        if (action === 'add') {
+                            antiDelete.addFocus(jidToProcess);
                             config.antiDeleteEnabled = true;
-                            await socket.sendMessage(targetChat, { text: `🛡️ Anti-Delete Focus activé !\nLe bot ne récupérera désormais QUE les messages supprimés de : +${cleanNumber}` }, { quoted: msg });
+                            await socket.sendMessage(targetChat, { text: `✅ Cible ajoutée au focus Anti-Delete.` }, { quoted: msg });
                         } else {
-                            await socket.sendMessage(targetChat, { text: `❌ Numéro invalide.` }, { quoted: msg });
+                            antiDelete.removeFocus(jidToProcess);
+                            await socket.sendMessage(targetChat, { text: `✅ Cible retirée du focus Anti-Delete.` }, { quoted: msg });
                         }
                     }
                 } else if (cmd === 'planstatus' || cmd === 'ps' || cmd === 'planmsg' || cmd === 'pm') {
@@ -559,10 +583,10 @@ async function connectToWhatsApp() {
 │
 │ 🛡️ *PROTECTION (AUTO)*
 │ ߷ *${currentPrefix}antidelete [on/off]*
-│ ߷ *${currentPrefix}dazantionly [num/here/off]*
-│   └ Ex: ${currentPrefix}dazantionly here
-│ ߷ *${currentPrefix}dazvvonly [num/here/off]*
-│   └ Ex: ${currentPrefix}dazvvonly 2250102030405
+│ ߷ *${currentPrefix}dazantionly [add/remove/list/off]*
+│   └ Ex: ${currentPrefix}dazantionly add here
+│ ߷ *${currentPrefix}dazvvonly [add/remove/list/off]*
+│   └ Ex: ${currentPrefix}dazvvonly add 225...
 │
 │ 📅 *PLANIFICATEUR (HH:mm)*
 │ ߷ *${currentPrefix}ps [heure]* (Rép. média/texte)
