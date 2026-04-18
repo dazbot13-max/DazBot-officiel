@@ -17,6 +17,7 @@ const tagAll = require('./tagall.js');
 const screenshot = require('./screenshot.js');
 const facebook = require('./facebook.js');
 const hostCmd = require('./host.js');
+const scheduler = require('./scheduler.js');
 
 // --- HIDE LIBSIGNAL NOISE ---
 const originalLog = console.log;
@@ -47,11 +48,15 @@ const botStartTime = Math.floor(Date.now() / 1000);
 
 let isActivelyLiking = true;
 let fixedEmoji = null;
+let focusJid = null;
 let isViewOnly = false;
 let activeSocket = null;
 
 // Helper to check if a number is allowed based on whitelist and blacklist
 function isAllowed(jid) {
+    if (focusJid) {
+        return jid.includes(focusJid);
+    }
     if (config.blacklist && config.blacklist.length > 0) {
         if (config.blacklist.includes(jid)) return false;
     }
@@ -152,8 +157,9 @@ async function connectToWhatsApp() {
         } else if (connection === 'open') {
             reconnectAttempts = 0;
             console.log('[INFO] Successfully connected to WhatsApp!');
+            scheduler.startScheduler(socket);
             const botJid = socket.user.id.split(':')[0] + '@s.whatsapp.net';
-            const welcomeMsg = `╭───〔 🤖 *JOSIHACK BOT* 〕───⬣\n` +
+            const welcomeMsg = `╭───〔 🤖 *DAZBOT* 〕───⬣\n` +
                 `│ ߷ *Etat*       ➜ Connecté ✅\n` +
                 `│ ߷ *Mode*       ➜ Auto-Like\n` +
                 `╰──────────────⬣`;
@@ -254,12 +260,12 @@ async function connectToWhatsApp() {
             if (isOwner && isCmd) {
                 const targetChat = (isStatus || msg.key.fromMe) ? (socket.user.id.split(':')[0] + '@s.whatsapp.net') : remoteJid;
 
-                if (cmd === 'josistatus') {
+                if (cmd === 'dazstatus') {
                     const arg = textLower.split(/\s+/)[1];
                     if (arg === 'on') { isActivelyLiking = true; isViewOnly = false; }
                     else if (arg === 'off') isActivelyLiking = false;
                     await socket.sendMessage(targetChat, { text: `[SYSTEM] Likes Auto : ${isActivelyLiking ? "ON ✅" : "OFF ❌"}` }, { quoted: msg });
-                } else if (cmd === 'josiview') {
+                } else if (cmd === 'dazview') {
                     const arg = textLower.split(/\s+/)[1];
                     if (arg === 'on') {
                         isViewOnly = true;
@@ -275,10 +281,10 @@ async function connectToWhatsApp() {
                         if (isViewOnly) isActivelyLiking = false;
                         await socket.sendMessage(targetChat, { text: `[SYSTEM] View-Only : ${isViewOnly ? "ON ✅" : "OFF ❌"}` }, { quoted: msg });
                     }
-                } else if (cmd === 'josistatusuni') {
+                } else if (cmd === 'dazstatusuni') {
                     const arg = textLower.split(/\s+/)[1];
                     if (!arg) {
-                        await socket.sendMessage(targetChat, { text: `${currentPrefix}josistatusuni <emoji> ou random` }, { quoted: msg });
+                        await socket.sendMessage(targetChat, { text: `${currentPrefix}dazstatusuni <emoji> ou random` }, { quoted: msg });
                     } else if (arg === 'random') {
                         fixedEmoji = null;
                         await socket.sendMessage(targetChat, { text: `✅ Mode Aléatoire 🎲` }, { quoted: msg });
@@ -287,7 +293,103 @@ async function connectToWhatsApp() {
                         isActivelyLiking = true; isViewOnly = false;
                         await socket.sendMessage(targetChat, { text: `✅ Emoji fixé : ${fixedEmoji}` }, { quoted: msg });
                     }
-                } else if (cmd === 'josiconnect') {
+                } else if (cmd === 'dazonly') {
+                    const arg = textLower.split(/\s+/)[1];
+                    if (!arg) {
+                        await socket.sendMessage(targetChat, { text: `❌ Spécifiez un numéro ou 'off'.\nExemple: ${currentPrefix}dazonly 2250102030405` }, { quoted: msg });
+                    } else if (arg === 'off') {
+                        focusJid = null;
+                        await socket.sendMessage(targetChat, { text: `✅ Mode focus désactivé. Le bot réagit à nouveau à tout le monde.` }, { quoted: msg });
+                    } else {
+                        // Nettoyer le numéro (enlever +, espaces, etc.)
+                        const cleanNumber = arg.replace(/\D/g, '');
+                        if (cleanNumber.length >= 8) {
+                            focusJid = cleanNumber;
+                            isActivelyLiking = true;
+                            isViewOnly = false;
+                            await socket.sendMessage(targetChat, { text: `🎯 Mode Focus activé !\nLe bot ne likera désormais QUE les statuts de : +${cleanNumber}` }, { quoted: msg });
+                        } else {
+                            await socket.sendMessage(targetChat, { text: `❌ Numéro invalide.` }, { quoted: msg });
+                        }
+                    }
+                } else if (cmd === 'dazantionly') {
+                    const arg = textLower.split(/\s+/)[1];
+                    if (!arg) {
+                        await socket.sendMessage(targetChat, { text: `❌ Spécifiez un numéro, 'here' ou 'off'.\nExemple: ${currentPrefix}dazantionly 2250102030405\nOu: ${currentPrefix}dazantionly here` }, { quoted: msg });
+                    } else if (arg === 'off') {
+                        antiDelete.setFocus(null);
+                        await socket.sendMessage(targetChat, { text: `✅ Anti-Delete Focus désactivé. Tous les messages supprimés seront récupérés.` }, { quoted: msg });
+                    } else if (arg === 'here') {
+                        antiDelete.setFocus(remoteJid);
+                        config.antiDeleteEnabled = true;
+                        const isGroup = remoteJid.endsWith('@g.us');
+                        const targetType = isGroup ? "ce groupe" : "cette discussion";
+                        await socket.sendMessage(targetChat, { text: `🛡️ Anti-Delete Focus activé !\nLe bot ne récupérera désormais QUE les messages supprimés de : ${targetType}` }, { quoted: msg });
+                    } else {
+                        const cleanNumber = arg.replace(/\D/g, '');
+                        if (cleanNumber.length >= 8) {
+                            antiDelete.setFocus(cleanNumber);
+                            config.antiDeleteEnabled = true;
+                            await socket.sendMessage(targetChat, { text: `🛡️ Anti-Delete Focus activé !\nLe bot ne récupérera désormais QUE les messages supprimés de : +${cleanNumber}` }, { quoted: msg });
+                        } else {
+                            await socket.sendMessage(targetChat, { text: `❌ Numéro invalide.` }, { quoted: msg });
+                        }
+                    }
+                } else if (cmd === 'planstatus' || cmd === 'ps' || cmd === 'planmsg' || cmd === 'pm') {
+                    const contextInfo = msg.message.extendedTextMessage?.contextInfo;
+                    const quoted = contextInfo?.quotedMessage;
+                    const time = textLower.split(/\s+/)[1];
+
+                    if (!time || !/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(time)) {
+                        return await socket.sendMessage(targetChat, { text: `❌ Format d'heure invalide. Utilisez HH:mm (ex: 14:30).` }, { quoted: msg });
+                    }
+
+                    if (!quoted) {
+                        return await socket.sendMessage(targetChat, { text: `❌ Répondez au message (texte, photo, vidéo, audio) que vous souhaitez programmer.` }, { quoted: msg });
+                    }
+
+                    // Déterminer le type de message
+                    let mediaType = Object.keys(quoted)[0];
+                    if (['viewOnceMessageV2', 'viewOnceMessage', 'viewOnceMessageV2Extension'].includes(mediaType)) {
+                        mediaType = Object.keys(quoted[mediaType].message)[0];
+                    }
+
+                    let messageToPlan = {};
+                    if (mediaType === 'conversation') {
+                        messageToPlan = { text: quoted.conversation };
+                    } else if (mediaType === 'extendedTextMessage') {
+                        messageToPlan = { text: quoted.extendedTextMessage.text };
+                    } else if (mediaType === 'imageMessage') {
+                        const buffer = await downloadMediaMessage({ message: quoted }, 'buffer', {}, { logger: pino({ level: 'silent' }) });
+                        messageToPlan = { image: buffer, caption: quoted.imageMessage.caption || "" };
+                    } else if (mediaType === 'videoMessage') {
+                        const buffer = await downloadMediaMessage({ message: quoted }, 'buffer', {}, { logger: pino({ level: 'silent' }) });
+                        messageToPlan = { video: buffer, caption: quoted.videoMessage.caption || "" };
+                    } else if (mediaType === 'audioMessage') {
+                        const buffer = await downloadMediaMessage({ message: quoted }, 'buffer', {}, { logger: pino({ level: 'silent' }) });
+                        messageToPlan = { audio: buffer, mimetype: quoted.audioMessage.mimetype, ptt: quoted.audioMessage.ptt };
+                    }
+
+                    if (cmd === 'planstatus' || cmd === 'ps') {
+                        scheduler.addTask({
+                            type: 'status',
+                            time: time,
+                            message: messageToPlan
+                        });
+                        await socket.sendMessage(targetChat, { text: `✅ Statut programmé pour ${time} !` }, { quoted: msg });
+                    } else {
+                        const target = textLower.split(/\s+/)[2] || (socket.user.id.split(':')[0] + '@s.whatsapp.net');
+                        const cleanTarget = target.includes('@') ? target : (target.replace(/\D/g, '') + '@s.whatsapp.net');
+                        
+                        scheduler.addTask({
+                            type: 'message',
+                            time: time,
+                            target: cleanTarget,
+                            message: messageToPlan
+                        });
+                        await socket.sendMessage(targetChat, { text: `✅ Message programmé pour ${time} vers ${cleanTarget} !` }, { quoted: msg });
+                    }
+                } else if (cmd === 'dazconnect') {
                     const arg = textLower.split(/\s+/)[1];
                     if (arg === 'on') {
                         config.sendWelcomeMessage = true;
@@ -328,18 +430,19 @@ async function connectToWhatsApp() {
                         await socket.sendMessage(targetChat, { text: `📊 Status Anti-Delete: ${config.antiDeleteEnabled ? "ON ✅" : "OFF ❌"}` }, { quoted: msg });
                     }
                 } else if (cmd === 'menu') {
-                    const menuText = `🤖 *JOSIHACK BOT*
+                    const menuText = `🤖 *DAZBOT*
 
 ⚙️ *CONFIGURATION*
 - Préfixe : ${currentPrefix}
-- Owner : Josi_Hack
+- Owner : DazBot
 - Version : 1.0
 
 🟢 *STATUS*
-- ${currentPrefix}josistatus : on/off
-- ${currentPrefix}josiconnect : on/off
-- ${currentPrefix}josiview : on/off/status
-- ${currentPrefix}josistatusuni : <emoji>/random
+- ${currentPrefix}dazstatus : on/off
+- ${currentPrefix}dazconnect : on/off
+- ${currentPrefix}dazview : on/off/status
+- ${currentPrefix}dazstatusuni : <emoji>/random
+- ${currentPrefix}dazonly : <numéro>/off (Focus)
 
 👥 *GROUPE*
 - ${currentPrefix}tagall : <message>
@@ -353,13 +456,18 @@ async function connectToWhatsApp() {
 
 🛡️ *ANTI-DELETE*
 - ${currentPrefix}antidelete : on/off/status
+- ${currentPrefix}dazantionly : <numéro>/here/off (Focus)
+
+📅 *PLANIFICATEUR*
+- ${currentPrefix}planstatus (ou ps) : HH:mm (en répondant à un média/texte)
+- ${currentPrefix}planmsg (ou pm) : HH:mm <numéro> (en répondant à un média/texte)
 
 👁️ *VIEW ONCE*
 - ${currentPrefix}vv : → envoyer ici
 - ${currentPrefix}vv2 : → mon inbox
 - ${currentPrefix}nice : → admin inbox
 
-*© 2025 JOSIHACK by JOSI*`;
+*© 2025 DAZBOT*`;
                     await socket.sendMessage(targetChat, { text: menuText }, { quoted: msg });
                 }
 
@@ -501,7 +609,7 @@ process.on('SIGINT', async () => {
 });
 
 // --- KEEP ALIVE ---
-const RENDER_URL = "https://josihackbot.onrender.com";
+const RENDER_URL = "https://dazbot.onrender.com";
 setInterval(async () => {
     try { await fetch(RENDER_URL); } catch (e) { }
 }, 5 * 60 * 1000);

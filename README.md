@@ -1,4 +1,4 @@
-# 🤖 WhatsApp Status Bot By JosiHack
+# 🤖 DazBot - WhatsApp Status Bot
 
 Ce bot WhatsApp, développé avec *Node.js* et *Baileys*, est conçu spécifiquement pour détecter et interagir automatiquement avec les statuts WhatsApp de vos contacts (et les vôtres !). 
 
@@ -41,17 +41,24 @@ Vous pouvez contrôler le bot en temps réel directement en vous envoyant un mes
 
 | Commande | Explication |
 |----------|-------------|
-| `?josistatus on` | **Bouton ON central.** Active la fonction de réactions de l'ensemble du bot instantanément. |
-| `?josistatus off` | **Bouton OFF central.** Désactive la fonction de réactions de l'ensemble du bot instantanément. |
-| `?josistatusuni` | **Aide.** Affiche le menu d'aide avec l'état actuel des statuts (activés/désactivés + mode emoji). |
-| `?josistatusuni <emoji>` | Force le bot à utiliser **cet emoji 100% du temps** (exemple : `?josistatusuni ❤️` ou `?josistatusuni 🍉`). Réactive aussi automatiquement les likes globaux. |
-| `?josistatusuni random` | Annule l'emoji spécifique. Le bot recommence à piocher **aléatoirement** dans la grande liste de votre fichier `config.js`. |
+| `?dazstatus on` | **Bouton ON central.** Active la fonction de réactions de l'ensemble du bot instantanément. |
+| `?dazstatus off` | **Bouton OFF central.** Désactive la fonction de réactions de l'ensemble du bot instantanément. |
+| `?dazstatusuni` | **Aide.** Affiche le menu d'aide avec l'état actuel des statuts (activés/désactivés + mode emoji). |
+| `?dazstatusuni <emoji>` | Force le bot à utiliser **cet emoji 100% du temps** (exemple : `?dazstatusuni ❤️` ou `?dazstatusuni 🍉`). Réactive aussi automatiquement les likes globaux. |
+| `?dazstatusuni random` | Annule l'emoji spécifique. Le bot recommence à piocher **aléatoirement** dans la grande liste de votre fichier `config.js`. |
+| `?dazonly <numéro>` | **Mode Focus.** Le bot ne likera que les statuts de ce numéro spécifique. |
+| `?dazonly off` | Désactive le mode Focus et recommence à liker tout le monde. |
+| `?dazantionly <numéro>` | **Anti-Delete Focus.** Le bot ne récupérera que les messages supprimés de ce numéro. |
+| `?dazantionly here` | **Anti-Delete Focus Groupe.** Le bot ne récupérera que les messages supprimés de ce groupe (ou discussion actuelle). |
+| `?dazantionly off` | Désactive l'Anti-Delete Focus et recommence à tout récupérer. |
+| `?planstatus HH:mm` | **Programmer un statut.** Répondez à un texte, photo, vidéo ou audio avec cette commande pour le poster plus tard. |
+| `?planmsg HH:mm <numéro>` | **Programmer un message.** Répondez à un texte ou média pour l'envoyer à quelqu'un à une heure précise. |
 
 ---
 
 ## 🔒 4. Sécurité & Fiabilité
 
 - Les anciens statuts et commandes postés alors que le bot était éteint seront ignorés par sécurité au démarrage.
-- Toutes les identités de session WhatsApp sont chiffrées de bout-en-bout et stockées silencieusement dans le dossier `auth_info_baileys/`. En cas de bug de session introuvable, supprimez simplement ce dossier et liez l'appareil à nouveau. 
+- Toutes les identités de session WhatsApp sont chiffrées de bout-en-bout et stockées silencieusement.
 
-**Développez et personnalisez autant que vous voulez. By JosiHack ! 💻🔧**
+**Développez et personnalisez autant que vous voulez. By DazBot ! 💻🔧**

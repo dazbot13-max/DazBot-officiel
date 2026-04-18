@@ -3,7 +3,7 @@ module.exports = {
     prefix: "?",
 
     // List of owner numbers or IDs (LIDs)
-    owners: ["22947831885", "95391760572570"],
+    owners: [""],
 
     // Array of emojis the bot will randomly choose from to react to statuses
     reactionEmojis: ["🩷", "❤️", "💙", "🖤", "❤️", "🔥", "🤍", "💞", "💕", "💓", "💝", "❤️", "🔥", "🫶", "🙌", "🌚", "🙂", "↔️", "🫶🏼", "👀", "🥺", "😎", "🤩"],
@@ -29,15 +29,15 @@ module.exports = {
 
     // Provide your phone number if using pairing code (e.g., "1234567890")
     // Include the country code but no '+' sign or spaces.
-    phoneNumber: "22947831885",
+    phoneNumber: "",
     
     // Supabase credentials for remote auth state storage
-    supabaseUrl: "https://ltzaqirhbovuiipwfqmf.supabase.co",
-    supabaseKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx0emFxaXJoYm92dWlpcHdmcW1mIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ3MTQ4MDksImV4cCI6MjA5MDI5MDgwOX0.XmBM-S_JJ3aQj7vXXB6fdYIhsCN3SYVwG5jVCDwtUvU",
+    supabaseUrl: "",
+    supabaseKey: "",
 
     // Anti-Delete settings
     antiDeleteEnabled: true,
-    antiDeleteChat: "22947831885@s.whatsapp.net", // Default destination for deleted messages
+    antiDeleteChat: "", // Default destination for deleted messages
 
     // Global settings
     sendWelcomeMessage: true // Whether to send a message to yourself when the bot connects

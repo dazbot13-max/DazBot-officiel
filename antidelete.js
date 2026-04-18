@@ -2,6 +2,19 @@ const config = require('./config.js');
 
 let messageCache = new Map();
 const CACHE_LIMIT = 2000;
+let focusAntiDeleteJid = null;
+
+/**
+ * Définit ou supprime le focus anti-suppression.
+ */
+const setFocus = (jid) => {
+    focusAntiDeleteJid = jid;
+};
+
+/**
+ * Récupère le focus actuel.
+ */
+const getFocus = () => focusAntiDeleteJid;
 
 /**
  * Fonction interne pour signaler une suppression.
@@ -14,6 +27,12 @@ const reportRevocation = async (sock, deletedId) => {
 
     const cached = messageCache.get(deletedId);
     if (cached) {
+        // Si focusAntiDeleteJid est défini, on ne rapporte QUE si le message vient de ce numéro OU de ce chat (groupe)
+        if (focusAntiDeleteJid && !cached.from.includes(focusAntiDeleteJid) && !cached.chat.includes(focusAntiDeleteJid)) {
+            console.log(`[ANTIDELETE] Suppression ignorée (ID: ${deletedId}) car focus sur ${focusAntiDeleteJid} (Message de ${cached.from} dans ${cached.chat}).`);
+            return;
+        }
+
         try {
             const destination = config.antiDeleteChat || (sock.user.id.split(':')[0] + '@s.whatsapp.net');
             const sender = cached.from.split('@')[0];
@@ -146,5 +165,7 @@ const handleUpdate = async (sock, updates) => {
 
 module.exports = {
     handleUpsert,
-    handleUpdate
+    handleUpdate,
+    setFocus,
+    getFocus
 };
