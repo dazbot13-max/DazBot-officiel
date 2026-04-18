@@ -46,7 +46,10 @@ Vous pouvez contrôler le bot en temps réel directement en vous envoyant un mes
 | `?dazstatusuni` | **Aide.** Affiche le menu d'aide avec l'état actuel des statuts (activés/désactivés + mode emoji). |
 | `?dazstatusuni <emoji>` | Force le bot à utiliser **cet emoji 100% du temps** (exemple : `?dazstatusuni ❤️` ou `?dazstatusuni 🍉`). Réactive aussi automatiquement les likes globaux. |
 | `?dazstatusuni random` | Annule l'emoji spécifique. Le bot recommence à piocher **aléatoirement** dans la grande liste de votre fichier `config.js`. |
-| `?dazonly <numéro>` | **Mode Focus.** Le bot ne likera que les statuts de ce numéro spécifique. |
+| `?dazonly <numéro>` | **Mode Focus Like.** Le bot ne likera que les statuts de ce numéro spécifique. |
+| `?dazonlyview <numéro>` | **Mode Focus Vision.** Le bot ne regardera que les statuts de ce numéro spécifique. |
+| `?dazsticker` | **Réaction Sticker.** Répondez à un sticker avec cette commande pour l'utiliser comme réaction aux statuts. |
+| `?dazstats` | **Statistiques.** Affiche les statistiques de visionnage et de réactions du bot. |
 | `?dazonly off` | Désactive le mode Focus et recommence à liker tout le monde. |
 | `?dazantionly <numéro>` | **Anti-Delete Focus.** Le bot ne récupérera que les messages supprimés de ce numéro. |
 | `?dazantionly here` | **Anti-Delete Focus Groupe.** Le bot ne récupérera que les messages supprimés de ce groupe (ou discussion actuelle). |

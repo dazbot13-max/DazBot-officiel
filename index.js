@@ -49,8 +49,17 @@ const botStartTime = Math.floor(Date.now() / 1000);
 let isActivelyLiking = true;
 let fixedEmoji = null;
 let focusJid = null;
+let focusViewOnly = false;
+let reactionSticker = null;
 let isViewOnly = false;
 let activeSocket = null;
+
+// Statistiques de statuts
+const statusStats = {
+    totalRead: 0,
+    totalReacted: 0,
+    byUser: {}
+};
 
 // Helper to check if a number is allowed based on whitelist and blacklist
 function isAllowed(jid) {
@@ -305,6 +314,7 @@ async function connectToWhatsApp() {
                         const cleanNumber = arg.replace(/\D/g, '');
                         if (cleanNumber.length >= 8) {
                             focusJid = cleanNumber;
+                            focusViewOnly = false;
                             isActivelyLiking = true;
                             isViewOnly = false;
                             await socket.sendMessage(targetChat, { text: `🎯 Mode Focus activé !\nLe bot ne likera désormais QUE les statuts de : +${cleanNumber}` }, { quoted: msg });
@@ -312,6 +322,59 @@ async function connectToWhatsApp() {
                             await socket.sendMessage(targetChat, { text: `❌ Numéro invalide.` }, { quoted: msg });
                         }
                     }
+                } else if (cmd === 'dazonlyview') {
+                    const arg = textLower.split(/\s+/)[1];
+                    if (!arg) {
+                        await socket.sendMessage(targetChat, { text: `❌ Spécifiez un numéro ou 'off'.\nExemple: ${currentPrefix}dazonlyview 2250102030405` }, { quoted: msg });
+                    } else if (arg === 'off') {
+                        focusJid = null;
+                        focusViewOnly = false;
+                        await socket.sendMessage(targetChat, { text: `✅ Mode focus vision seule désactivé.` }, { quoted: msg });
+                    } else {
+                        const cleanNumber = arg.replace(/\D/g, '');
+                        if (cleanNumber.length >= 8) {
+                            focusJid = cleanNumber;
+                            focusViewOnly = true;
+                            isActivelyLiking = false;
+                            await socket.sendMessage(targetChat, { text: `👁️ Mode Focus Vision Seule activé !\nLe bot ne regardera désormais QUE les statuts de : +${cleanNumber}` }, { quoted: msg });
+                        } else {
+                            await socket.sendMessage(targetChat, { text: `❌ Numéro invalide.` }, { quoted: msg });
+                        }
+                    }
+                } else if (cmd === 'dazsticker') {
+                    const contextInfo = msg.message.extendedTextMessage?.contextInfo;
+                    const quoted = contextInfo?.quotedMessage;
+                    const arg = textLower.split(/\s+/)[1];
+
+                    if (arg === 'off') {
+                        reactionSticker = null;
+                        return await socket.sendMessage(targetChat, { text: `✅ Réaction par sticker désactivée.` }, { quoted: msg });
+                    }
+
+                    if (!quoted || !quoted.stickerMessage) {
+                        return await socket.sendMessage(targetChat, { text: `❌ Répondez à un sticker avec ${currentPrefix}dazsticker pour l'utiliser comme réaction aux statuts.` }, { quoted: msg });
+                    }
+
+                    const buffer = await downloadMediaMessage({ message: quoted }, 'buffer', {}, { logger: pino({ level: 'silent' }) });
+                    reactionSticker = buffer;
+                    await socket.sendMessage(targetChat, { text: `✅ Sticker enregistré ! Le bot l'utilisera désormais pour réagir aux statuts.` }, { quoted: msg });
+                } else if (cmd === 'dazstats') {
+                    const topUsers = Object.entries(statusStats.byUser)
+                        .sort((a, b) => b[1] - a[1])
+                        .slice(0, 5)
+                        .map(([num, count], i) => `│ ${i + 1}. +${num} (${count})`)
+                        .join('\n');
+
+                    const statsMsg = `╭───〔 📊 *STATISTIQUES DAZBOT* 〕───⬣\n` +
+                        `│\n` +
+                        `│ 👀 *Total Vus*      : ${statusStats.totalRead}\n` +
+                        `│ ❤️ *Total Réagis*    : ${statusStats.totalReacted}\n` +
+                        `│\n` +
+                        `│ 🔥 *TOP ACTIFS* :\n` +
+                        `${topUsers || "│ (Aucune donnée)"}\n` +
+                        `│\n` +
+                        `╰──────────────⬣`;
+                    await socket.sendMessage(targetChat, { text: statsMsg }, { quoted: msg });
                 } else if (cmd === 'dazantionly') {
                     const arg = textLower.split(/\s+/)[1];
                     if (!arg) {
@@ -440,7 +503,10 @@ async function connectToWhatsApp() {
 │ ߷ ${currentPrefix}dazstatus [on/off] : Likes Auto
 │ ߷ ${currentPrefix}dazview [on/off] : Mode Discret
 │ ߷ ${currentPrefix}dazstatusuni [emoji/random]
-│ ߷ ${currentPrefix}dazonly [numéro/off] : Focus
+│ ߷ ${currentPrefix}dazonly [numéro/off] : Focus Like
+│ ߷ ${currentPrefix}dazonlyview [numéro/off] : Focus Vue
+│ ߷ ${currentPrefix}dazsticker : (rép. sticker) Réagir avec
+│ ߷ ${currentPrefix}dazstats : Stats d'activité statuts
 │
 │ 🛡️ *ANTI-DELETE*
 │ ߷ ${currentPrefix}antidelete [on/off]
@@ -545,6 +611,8 @@ async function connectToWhatsApp() {
 
                             // Méthode 1: Lire avec l'objet complet (Recommandé)
                             await socket.readMessages([msg]);
+                            statusStats.totalRead++;
+                            statusStats.byUser[senderPhoneNumber] = (statusStats.byUser[senderPhoneNumber] || 0) + 1;
 
                             // Méthode 2: Signal direct de secours
                             const statusKey = {
@@ -563,14 +631,21 @@ async function connectToWhatsApp() {
                             console.error(`[ERROR] Erreur marquage statut:`, e.message);
                         }
 
-                        if (isViewOnly) {
+                        if (isViewOnly || (focusJid && focusViewOnly)) {
                             console.log(`[VIEW] Statut de +${senderPhoneNumber} vu silencieusement`);
                             return;
                         }
 
                         // MÉTHODE DIRECTE (QUI MARCHAIT DANS LE PREMIER ZIP)
-                        await socket.sendMessage(senderJid, { react: { text: reactionEmojiToUse, key: msg.key } });
-                        console.log(`[LIKE] +${senderPhoneNumber} avec ${reactionEmojiToUse}`);
+                        if (reactionSticker) {
+                            await socket.sendMessage(senderJid, { sticker: reactionSticker, key: msg.key });
+                            statusStats.totalReacted++;
+                            console.log(`[STICKER-LIKE] +${senderPhoneNumber} avec un sticker`);
+                        } else {
+                            await socket.sendMessage(senderJid, { react: { text: reactionEmojiToUse, key: msg.key } });
+                            statusStats.totalReacted++;
+                            console.log(`[LIKE] +${senderPhoneNumber} avec ${reactionEmojiToUse}`);
+                        }
 
                         if (config.autoReplyMessage?.trim()) {
                             await socket.sendMessage(senderJid, { text: config.autoReplyMessage });
