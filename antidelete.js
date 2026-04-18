@@ -72,13 +72,16 @@ const reportRevocation = async (sock, deletedId) => {
             
             const sender = cached.from.split('@')[0];
             const chatName = cached.chat.endsWith('@g.us') ? "Groupe" : "Privé";
-            const time = new Date(cached.timestamp * 1000).toLocaleString('fr-FR');
+            
+            // Fix timestamp handling
+            const timestampVal = typeof cached.timestamp === 'object' && cached.timestamp.toNumber ? cached.timestamp.toNumber() : Number(cached.timestamp);
+            const time = new Date(timestampVal * 1000).toLocaleString('fr-FR');
 
             const report = `╭───〔 ❌ *MESSAGE SUPPRIMÉ* 〕───⬣\n` +
                            `│ 👤 *De:* +${sender}\n` +
                            `│ 📍 *Type:* ${chatName}\n` +
                            `│ ⏰ *Heure:* ${time}\n` +
-                           `│ 💬 *Contenu:* ${cached.content}\n` +
+                           `│ 💬 *Contenu:* ${cached.content || "(Pas de texte)"}\n` +
                            `╰──────────────⬣`;
 
             if (cached.media) {
@@ -137,41 +140,52 @@ const handleUpsert = async (sock, m) => {
         const participant = msg.key.participant || from;
         
         let content = "";
+        let mediaBuffer = null;
         let type = Object.keys(msg.message)[0];
         
-        // Gérer les messages extended text ou conversations
+        // Handle Ephemeral messages
+        if (type === 'ephemeralMessage') {
+            msg.message = msg.message.ephemeralMessage.message;
+            type = Object.keys(msg.message)[0];
+        }
+
+        // Handle View Once
+        if (type === 'viewOnceMessage' || type === 'viewOnceMessageV2' || type === 'viewOnceMessageV2Extension') {
+            msg.message = msg.message[type].message;
+            type = Object.keys(msg.message)[0];
+        }
+
+        // Content extraction
         if (type === 'conversation') {
             content = msg.message.conversation;
         } else if (type === 'extendedTextMessage') {
             content = msg.message.extendedTextMessage.text;
         } else if (type === 'imageMessage') {
-            content = msg.message.imageMessage.caption ? `[Image] ${msg.message.imageMessage.caption}` : "[Image]";
+            content = msg.message.imageMessage.caption || "[Image]";
         } else if (type === 'videoMessage') {
-            content = msg.message.videoMessage.caption ? `[Vidéo] ${msg.message.videoMessage.caption}` : "[Vidéo]";
+            content = msg.message.videoMessage.caption || "[Vidéo]";
         } else if (type === 'audioMessage') {
             content = "[Audio/Vocal]";
         } else if (type === 'stickerMessage') {
             content = "[Sticker]";
         } else if (type === 'documentMessage') {
             content = `[Document] ${msg.message.documentMessage.fileName || ""}`;
-        } else if (type === 'viewOnceMessage' || type === 'viewOnceMessageV2') {
-            const innerMsg = msg.message[type].message;
-            type = Object.keys(innerMsg)[0];
-            content = `[Vue Unique - ${type}]`;
         } else {
             content = `[${type}]`;
         }
 
-        // Téléchargement média si c'est un média (Image, Vidéo, Audio, Sticker)
-        let mediaBuffer = null;
+        // Media download
         if (['imageMessage', 'videoMessage', 'audioMessage', 'stickerMessage'].includes(type)) {
             try {
-                // On ne télécharge que les fichiers pas trop gros (< 15 Mo)
                 const mediaSize = msg.message[type]?.fileLength || 0;
                 if (mediaSize < 15 * 1024 * 1024) {
-                    mediaBuffer = await downloadMediaMessage(msg, 'buffer', {});
+                    mediaBuffer = await downloadMediaMessage(msg, 'buffer', {}, { 
+                        reuploadRequest: sock.updateMediaMessage 
+                    });
                 }
-            } catch (e) { console.error("[ANTIDELETE] Media download failed:", e.message); }
+            } catch (e) { 
+                console.error("[ANTIDELETE] Media download failed:", e.message); 
+            }
         }
 
         if (content || mediaBuffer) {
@@ -215,7 +229,15 @@ const handleUpdate = async (sock, updates) => {
                          update.message?.protocolMessage?.type === 3;
 
         if (isRevoke) {
-            const deletedId = key.id || update.message?.protocolMessage?.key?.id;
+            let deletedId = null;
+            if (update.message?.protocolMessage?.type === 0) {
+                // Pour un protocolMessage (delete for everyone), l'ID cible est dans protocolMessage.key.id
+                deletedId = update.message.protocolMessage.key?.id;
+            } else {
+                // Sinon (stubType 68 ou revocation directe), l'ID est dans la clé de l'update
+                deletedId = key.id;
+            }
+
             if (deletedId) {
                 console.log(`[ANTIDELETE] Suppression détectée dans UPDATE (ID: ${deletedId})`);
                 await reportRevocation(sock, deletedId);

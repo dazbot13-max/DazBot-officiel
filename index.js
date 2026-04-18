@@ -310,14 +310,16 @@ async function connectToWhatsApp() {
                 } else if (cmd === 'dazstatusuni') {
                     const arg = textLower.split(/\s+/)[1];
                     if (!arg) {
-                        await socket.sendMessage(targetChat, { text: `${currentPrefix}dazstatusuni <emoji> ou random` }, { quoted: msg });
+                        const status = fixedEmoji ? `Fixé sur ${fixedEmoji}` : "Aléatoire 🎲";
+                        await socket.sendMessage(targetChat, { text: `📊 *MODE UNI-EMOJI*\n\nEtat actuel : ${status}\n\nUsage:\n- ${currentPrefix}dazstatusuni ❤️ (Fixe l'emoji)\n- ${currentPrefix}dazstatusuni random (Mode aléatoire)` }, { quoted: msg });
                     } else if (arg === 'random') {
                         fixedEmoji = null;
-                        await socket.sendMessage(targetChat, { text: `✅ Mode Aléatoire 🎲` }, { quoted: msg });
+                        await socket.sendMessage(targetChat, { text: `✅ Mode Aléatoire 🎲 (Emojis du config.js)` }, { quoted: msg });
                     } else {
-                        fixedEmoji = textContent.split(/\s+/)[1];
-                        isActivelyLiking = true; isViewOnly = false;
-                        await socket.sendMessage(targetChat, { text: `✅ Emoji fixé : ${fixedEmoji}` }, { quoted: msg });
+                        fixedEmoji = arg; // Use arg directly to avoid issues with textContent
+                        isActivelyLiking = true; 
+                        isViewOnly = false;
+                        await socket.sendMessage(targetChat, { text: `✅ Mode Uni-Emoji activé !\nL'emoji ${fixedEmoji} sera utilisé pour tous les likes.` }, { quoted: msg });
                     }
                 } else if (cmd === 'dazonly') {
                     const arg = textLower.split(/\s+/)[1];
@@ -650,7 +652,6 @@ async function connectToWhatsApp() {
 
             // --- STATUS HANDLING ---
             if (isStatus) {
-                if (!isActivelyLiking && !isViewOnly) return;
                 const statusId = msg.key.id;
                 if (reactedStatusCache.has(statusId)) return;
 
@@ -663,9 +664,6 @@ async function connectToWhatsApp() {
                     senderJid = socket.user.id.split(':')[0] + '@s.whatsapp.net';
                 }
 
-                // On vérifie les listes blanche/noire uniquement pour les autres contacts
-                if (!senderJid || (!msg.key.fromMe && !isAllowed(senderJid))) return;
-
                 const senderPhoneNumber = senderJid.split('@')[0];
                 const emojis = config.reactionEmojis || ["❤️"];
                 const reactionEmojiToUse = fixedEmoji ? fixedEmoji : emojis[Math.floor(Math.random() * emojis.length)];
@@ -677,7 +675,7 @@ async function connectToWhatsApp() {
                             // Simulation de présence pour forcer l'enregistrement par WhatsApp
                             await socket.sendPresenceUpdate('available', senderJid);
 
-                            console.log(`[DEBUG-STATUS-READ] Sending FULL view for ID: ${msg.key.id} from ${senderJid}`);
+                            console.log(`[STATUS-READ] +${senderPhoneNumber} (${msg.key.id})`);
 
                             // Méthode 1: Lire avec l'objet complet (Recommandé)
                             await socket.readMessages([msg]);
@@ -701,10 +699,21 @@ async function connectToWhatsApp() {
                             console.error(`[ERROR] Erreur marquage statut:`, e.message);
                         }
 
+                        // On ne continue que si au moins un des deux modes est actif
+                        if (!isActivelyLiking && !isViewOnly) return;
+
+                        // Check if allowed to like (Moved here to ensure we ALWAYS read, but only LIKE if allowed)
+                        if (!msg.key.fromMe && !isAllowed(senderJid)) {
+                            console.log(`[STATUS-INFO] +${senderPhoneNumber} : Lu uniquement (Pas en focus/whitelist)`);
+                            return;
+                        }
+
                         if (isViewOnly || (focusJid && focusViewOnly)) {
                             console.log(`[VIEW] Statut de +${senderPhoneNumber} vu silencieusement`);
                             return;
                         }
+
+                        if (!isActivelyLiking) return;
 
                         // MÉTHODE DIRECTE (QUI MARCHAIT DANS LE PREMIER ZIP)
                         if (reactionSticker) {
