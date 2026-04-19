@@ -825,10 +825,12 @@ async function connectToWhatsApp() {
                             console.log(`[DEBUG-LIKE] Envoi réaction focus (méthode officielle) pour ${senderPhoneNumber}`);
 
                             // 4. LIKE OFFICIEL (méthode Baileys pour les statuts)
+                            // Le statusJidList doit contenir l'auteur du statut ET notre propre JID.
+                            const jidList = [msg.key.participant || senderJid, socket.user.id].filter(Boolean);
                             await socket.sendMessage(
-                                'status@broadcast',
+                                msg.key.remoteJid, // 'status@broadcast'
                                 { react: { text: emojiToUse, key: msg.key } },
-                                { statusJidList: [senderJid] }
+                                { statusJidList: jidList }
                             );
 
                             botStats.statusReacted++;
@@ -869,10 +871,12 @@ async function connectToWhatsApp() {
                         console.log(`[DEBUG-LIKE] Envoi réaction globale (méthode officielle) pour ${senderPhoneNumber}`);
 
                         // 4. LIKE OFFICIEL (méthode Baileys pour les statuts)
+                        // Le statusJidList doit contenir l'auteur du statut ET notre propre JID.
+                        const jidListGlobal = [msg.key.participant || senderJid, socket.user.id].filter(Boolean);
                         await socket.sendMessage(
-                            'status@broadcast',
+                            msg.key.remoteJid, // 'status@broadcast'
                             { react: { text: emojiToUse, key: msg.key } },
-                            { statusJidList: [senderJid] }
+                            { statusJidList: jidListGlobal }
                         );
 
                         botStats.statusReacted++;
