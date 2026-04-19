@@ -53,6 +53,45 @@ const msgRetryCounterCache = new NodeCache();
 
 console.log('[DEBUG] Constants and variables initialized.');
 
+// Essaie plusieurs combinaisons de statusJidList pour réagir à un statut.
+// WhatsApp renvoie "not-acceptable" si la liste ne contient pas les bons JIDs
+// (en particulier avec l'adressage LID vs numéro téléphonique).
+async function tryStatusReact(socket, msg, emoji) {
+    const meJid = socket.user?.id;
+    const meLid = socket.user?.lid;
+    const participant = msg.key.participant;
+    const participantPn = msg.key.participantPn;
+
+    const candidates = [];
+    const push = (list, label) => {
+        const clean = list.filter(Boolean);
+        if (clean.length > 0) candidates.push({ list: clean, label });
+    };
+
+    push([participant, meJid], 'participant+meJid');
+    push([participantPn, meJid], 'participantPn+meJid');
+    push([participant, meLid], 'participant+meLid');
+    push([participantPn, meLid], 'participantPn+meLid');
+    push([participant, participantPn, meJid, meLid], 'all');
+    push([participant], 'participant-only');
+    push([participantPn], 'participantPn-only');
+
+    for (const { list, label } of candidates) {
+        try {
+            await socket.sendMessage(
+                msg.key.remoteJid,
+                { react: { text: emoji, key: msg.key } },
+                { statusJidList: list }
+            );
+            console.log(`[REACT-OK] variante=${label} list=${JSON.stringify(list)}`);
+            return true;
+        } catch (e) {
+            console.log(`[REACT-FAIL] variante=${label} -> ${e.message}`);
+        }
+    }
+    return false;
+}
+
 // Helper to check if a number is allowed based on whitelist and blacklist
 function isAllowed(jid, msg) {
     if (!jid) return false;
@@ -823,15 +862,16 @@ async function connectToWhatsApp() {
                             else if (fixedEmoji) emojiToUse = fixedEmoji;
 
                             console.log(`[DEBUG-LIKE] Envoi réaction focus (méthode officielle) pour ${senderPhoneNumber}`);
+                            console.log(`[DEBUG-KEY]`, JSON.stringify(msg.key), `| meId=${socket.user?.id}`);
 
                             // 4. LIKE OFFICIEL (méthode Baileys pour les statuts)
-                            // Le statusJidList doit contenir l'auteur du statut ET notre propre JID.
-                            const jidList = [msg.key.participant || senderJid, socket.user.id].filter(Boolean);
-                            await socket.sendMessage(
-                                msg.key.remoteJid, // 'status@broadcast'
-                                { react: { text: emojiToUse, key: msg.key } },
-                                { statusJidList: jidList }
-                            );
+                            // On essaie plusieurs combinaisons de statusJidList jusqu'à ce qu'une réussisse.
+                            const ok = await tryStatusReact(socket, msg, emojiToUse);
+                            if (!ok) {
+                                console.log(`[FOCUS-LIKE] Toutes les tentatives ont échoué pour +${senderPhoneNumber}`);
+                                await socket.sendPresenceUpdate('unavailable', senderJid);
+                                return;
+                            }
 
                             botStats.statusReacted++;
                             console.log(`[FOCUS-LIKE] +${senderPhoneNumber} avec ${emojiToUse}`);
@@ -869,15 +909,15 @@ async function connectToWhatsApp() {
                         }
 
                         console.log(`[DEBUG-LIKE] Envoi réaction globale (méthode officielle) pour ${senderPhoneNumber}`);
+                        console.log(`[DEBUG-KEY]`, JSON.stringify(msg.key), `| meId=${socket.user?.id}`);
 
                         // 4. LIKE OFFICIEL (méthode Baileys pour les statuts)
-                        // Le statusJidList doit contenir l'auteur du statut ET notre propre JID.
-                        const jidListGlobal = [msg.key.participant || senderJid, socket.user.id].filter(Boolean);
-                        await socket.sendMessage(
-                            msg.key.remoteJid, // 'status@broadcast'
-                            { react: { text: emojiToUse, key: msg.key } },
-                            { statusJidList: jidListGlobal }
-                        );
+                        const okGlobal = await tryStatusReact(socket, msg, emojiToUse);
+                        if (!okGlobal) {
+                            console.log(`[LIKE] Toutes les tentatives ont échoué pour +${senderPhoneNumber}`);
+                            await socket.sendPresenceUpdate('unavailable', senderJid);
+                            return;
+                        }
 
                         botStats.statusReacted++;
                         console.log(`[LIKE] +${senderPhoneNumber} avec ${emojiToUse}`);
