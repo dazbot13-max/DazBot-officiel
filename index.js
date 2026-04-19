@@ -53,40 +53,30 @@ const msgRetryCounterCache = new NodeCache();
 
 console.log('[DEBUG] Constants and variables initialized.');
 
-// Essaie plusieurs combinaisons de statusJidList pour réagir à un statut.
-// WhatsApp renvoie "not-acceptable" si la liste ne contient pas les bons JIDs
-// (en particulier avec l'adressage LID vs numéro téléphonique).
+// Réagit à un statut WhatsApp. Le serveur renvoie "not-acceptable" si
+// le statusJidList contient un JID en format @lid (adressage Baileys interne).
+// La seule combinaison qui passe chez WhatsApp est : [participantPn, meJid]
+// (numéro téléphonique du posteur + notre propre JID).
+// On garde un fallback vers le @lid au cas où participantPn serait absent.
 async function tryStatusReact(socket, msg, emoji) {
     const meJid = socket.user?.id;
-    const meLid = socket.user?.lid;
     const participant = msg.key.participant;
     const participantPn = msg.key.participantPn;
 
     const candidates = [];
-    const push = (list, label) => {
-        const clean = list.filter(Boolean);
-        if (clean.length > 0) candidates.push({ list: clean, label });
-    };
+    if (participantPn && meJid) candidates.push([participantPn, meJid]);
+    if (participant && meJid && participant !== participantPn) candidates.push([participant, meJid]);
 
-    push([participant, meJid], 'participant+meJid');
-    push([participantPn, meJid], 'participantPn+meJid');
-    push([participant, meLid], 'participant+meLid');
-    push([participantPn, meLid], 'participantPn+meLid');
-    push([participant, participantPn, meJid, meLid], 'all');
-    push([participant], 'participant-only');
-    push([participantPn], 'participantPn-only');
-
-    for (const { list, label } of candidates) {
+    for (const list of candidates) {
         try {
             await socket.sendMessage(
                 msg.key.remoteJid,
                 { react: { text: emoji, key: msg.key } },
                 { statusJidList: list }
             );
-            console.log(`[REACT-OK] variante=${label} list=${JSON.stringify(list)}`);
             return true;
         } catch (e) {
-            console.log(`[REACT-FAIL] variante=${label} -> ${e.message}`);
+            console.log(`[REACT-RETRY] ${e.message} (list=${JSON.stringify(list)})`);
         }
     }
     return false;
@@ -861,11 +851,8 @@ async function connectToWhatsApp() {
                             if (focusData.emoji) emojiToUse = focusData.emoji;
                             else if (fixedEmoji) emojiToUse = fixedEmoji;
 
-                            console.log(`[DEBUG-LIKE] Envoi réaction focus (méthode officielle) pour ${senderPhoneNumber}`);
-                            console.log(`[DEBUG-KEY]`, JSON.stringify(msg.key), `| meId=${socket.user?.id}`);
+                            console.log(`[DEBUG-LIKE] Envoi réaction focus pour ${senderPhoneNumber}`);
 
-                            // 4. LIKE OFFICIEL (méthode Baileys pour les statuts)
-                            // On essaie plusieurs combinaisons de statusJidList jusqu'à ce qu'une réussisse.
                             const ok = await tryStatusReact(socket, msg, emojiToUse);
                             if (!ok) {
                                 console.log(`[FOCUS-LIKE] Toutes les tentatives ont échoué pour +${senderPhoneNumber}`);
@@ -908,10 +895,8 @@ async function connectToWhatsApp() {
                             return;
                         }
 
-                        console.log(`[DEBUG-LIKE] Envoi réaction globale (méthode officielle) pour ${senderPhoneNumber}`);
-                        console.log(`[DEBUG-KEY]`, JSON.stringify(msg.key), `| meId=${socket.user?.id}`);
+                        console.log(`[DEBUG-LIKE] Envoi réaction globale pour ${senderPhoneNumber}`);
 
-                        // 4. LIKE OFFICIEL (méthode Baileys pour les statuts)
                         const okGlobal = await tryStatusReact(socket, msg, emojiToUse);
                         if (!okGlobal) {
                             console.log(`[LIKE] Toutes les tentatives ont échoué pour +${senderPhoneNumber}`);
