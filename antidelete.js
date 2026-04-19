@@ -66,20 +66,34 @@ const reportRevocation = async (sock, deletedId) => {
         }
 
         try {
-            // Par défaut, on renvoie dans la discussion d'origine (groupe ou privé)
-            // Si antiDeleteChat est configuré dans config.js, on envoie là-bas à la place.
-            const destination = config.antiDeleteChat || cached.chat;
-            
+            // On redirige TOUJOURS vers le chat privé du propriétaire du bot.
+            // Ça évite de renvoyer le message supprimé dans le chat d'origine
+            // (où la personne qui a supprimé le verrait réapparaître → bot grillé).
+            // `config.antiDeleteChat` reste un override optionnel si le propriétaire
+            // veut rediriger vers un chat-poubelle différent.
+            const ownerJid = sock.user?.id ? (sock.user.id.split(':')[0] + '@s.whatsapp.net') : null;
+            const destination = config.antiDeleteChat || ownerJid || cached.chat;
+
             const sender = cached.from.split('@')[0];
-            const chatName = cached.chat.endsWith('@g.us') ? "Groupe" : "Privé";
-            
+            const isGroup = cached.chat.endsWith('@g.us');
+            let sourceLabel = `Privé (+${sender})`;
+            if (isGroup) {
+                // Essaie de récupérer le nom du groupe pour enrichir le rapport.
+                let groupName = cached.chat;
+                try {
+                    const meta = await sock.groupMetadata(cached.chat);
+                    if (meta?.subject) groupName = meta.subject;
+                } catch (_) {}
+                sourceLabel = `Groupe "${groupName}" (de +${sender})`;
+            }
+
             // Fix timestamp handling
             const timestampVal = typeof cached.timestamp === 'object' && cached.timestamp.toNumber ? cached.timestamp.toNumber() : Number(cached.timestamp);
             const time = new Date(timestampVal * 1000).toLocaleString('fr-FR');
 
             const report = `╭───〔 ❌ *MESSAGE SUPPRIMÉ* 〕───⬣\n` +
                            `│ 👤 *De:* +${sender}\n` +
-                           `│ 📍 *Type:* ${chatName}\n` +
+                           `│ 📍 *Source:* ${sourceLabel}\n` +
                            `│ ⏰ *Heure:* ${time}\n` +
                            `│ 💬 *Contenu:* ${cached.content || "(Pas de texte)"}\n` +
                            `╰──────────────⬣`;

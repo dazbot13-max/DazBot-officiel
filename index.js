@@ -299,30 +299,58 @@ async function connectToWhatsApp() {
             if (isViewOnce) {
                 try {
                     const senderJid = participantJid || remoteJid;
+                    // Résout LID → PN (sinon le numéro affiché est l'ID interne @lid
+                    // sans rapport avec le vrai numéro et la liste focus ne match pas).
+                    let resolvedSenderPn = msg.key.participantPn;
+                    if (!resolvedSenderPn && senderJid && senderJid.endsWith('@lid')) {
+                        try {
+                            resolvedSenderPn = await socket.signalRepository?.lidMapping?.getPNForLID?.(senderJid);
+                        } catch (_) {}
+                    }
+                    const senderPhoneNumber = (resolvedSenderPn || senderJid).split('@')[0].split(':')[0];
+                    const isGroupChat = remoteJid.endsWith('@g.us');
+
                     // --- FOCUS VV ---
                     if (focusVVJids.size > 0) {
-                        const senderNum = senderJid.split('@')[0];
                         const chatNum = remoteJid.split('@')[0];
-                        const isTargeted = Array.from(focusVVJids).some(jid => 
-                            senderJid.includes(jid) || remoteJid.includes(jid) || senderNum === jid || chatNum === jid
-                        );
+                        const isTargeted = Array.from(focusVVJids).some(jid => {
+                            // Les entrées de la liste peuvent être :
+                            //   - un numéro ("22955724800") : match sur le sender
+                            //   - un JID groupe ("xxx@g.us") : match sur le chat
+                            if (jid.endsWith('@g.us')) return remoteJid === jid;
+                            return senderPhoneNumber === jid || chatNum === jid;
+                        });
                         if (!isTargeted) {
-                            console.log(`[VV-FILTER] Vue Unique de ${senderJid} ignorée (Focus actif)`);
+                            console.log(`[VV-FILTER] Vue Unique de +${senderPhoneNumber} ignorée (focus actif, non ciblée)`);
                             return;
                         }
                     }
 
-                    const senderPhoneNumber = senderJid.split('@')[0];
                     const ownerJid = socket.user.id.split(':')[0] + '@s.whatsapp.net';
                     const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger: pino({ level: 'silent' }), reuploadRequest: socket.updateMediaMessage });
-                    const caption = `👁️ *VUE UNIQUE DÉTECTÉE*\n👤 +${senderPhoneNumber}`;
+
+                    let sourceLabel = `Privé`;
+                    if (isGroupChat) {
+                        let groupName = remoteJid;
+                        try {
+                            const meta = await socket.groupMetadata(remoteJid);
+                            if (meta?.subject) groupName = meta.subject;
+                        } catch (_) {}
+                        sourceLabel = `Groupe "${groupName}"`;
+                    }
+
+                    const caption = `👁️ *VUE UNIQUE DÉTECTÉE*\n👤 +${senderPhoneNumber}\n📍 ${sourceLabel}`;
                     if (messageTypeStr.includes('image')) await socket.sendMessage(ownerJid, { image: buffer, caption });
                     else if (messageTypeStr.includes('video')) await socket.sendMessage(ownerJid, { video: buffer, caption });
-                    else if (messageTypeStr.includes('audio')) await socket.sendMessage(ownerJid, { audio: buffer, mimetype: 'audio/mpeg', ptt: true });
-                    
+                    else if (messageTypeStr.includes('audio')) {
+                        await socket.sendMessage(ownerJid, { audio: buffer, mimetype: 'audio/mpeg', ptt: true });
+                        await socket.sendMessage(ownerJid, { text: caption });
+                    }
+
                     botStats.vvRecovered++;
                     botStats.byUser[senderPhoneNumber] = (botStats.byUser[senderPhoneNumber] || 0) + 1;
-                } catch (e) { console.error("[ERROR] Anti-View-Once failed"); }
+                    console.log(`[VV-CAPTURE] +${senderPhoneNumber} (${sourceLabel}) → envoyé à l'owner`);
+                } catch (e) { console.error("[ERROR] Anti-View-Once failed:", e.message); }
             }
 
             // --- GRACE PERIOD FOR STATUSES (OFFLINE CATCH-UP) ---
@@ -508,35 +536,58 @@ async function connectToWhatsApp() {
                             await socket.sendMessage(targetChat, { text: `❌ Numéro invalide.` }, { quoted: msg });
                         }
                     }
-                } else if (cmd === 'dazvvonly') {
+                } else if (cmd === 'dazvvonly' || cmd === 'dazvv') {
                     const action = textLower.split(/\s+/)[1];
-                    const target = textLower.split(/\s+/)[2];
+                    const rawTarget = textContent.trim().split(/\s+/)[2];
 
-                    if (!action) {
-                        const list = Array.from(focusVVJids).join(', ') || "Aucun";
-                        return await socket.sendMessage(targetChat, { text: `👁️ *Focus Vue Unique*\n\nUsage:\n- ${currentPrefix}dazvvonly add [num/here]\n- ${currentPrefix}dazvvonly remove [num/here]\n- ${currentPrefix}dazvvonly list\n- ${currentPrefix}dazvvonly off\n\nCibles actuelles: ${list}` }, { quoted: msg });
+                    const formatEntry = (e) => e.endsWith('@g.us') ? `📛 groupe ${e}` : `👤 +${e}`;
+
+                    if (!action || action === 'list') {
+                        const list = Array.from(focusVVJids).map(formatEntry).join('\n') || "Aucune cible.";
+                        return await socket.sendMessage(targetChat, { text: `👁️ *FOCUS VUE UNIQUE*\n\nSi vide : toutes les VV interceptées.\nSinon : uniquement celles des cibles.\n\nUsage :\n- ${currentPrefix}dazvv add [num]        (cible une personne)\n- ${currentPrefix}dazvv addgroup here    (cible le groupe courant)\n- ${currentPrefix}dazvv addgroup <jid>    (cible un groupe précis)\n- ${currentPrefix}dazvv remove [num]\n- ${currentPrefix}dazvv removegroup here\n- ${currentPrefix}dazvv list\n- ${currentPrefix}dazvv off\n\n${list}` }, { quoted: msg });
                     }
 
                     if (action === 'off') {
                         focusVVJids.clear();
-                        await socket.sendMessage(targetChat, { text: `✅ Focus Vue Unique désactivé.` }, { quoted: msg });
-                    } else if (action === 'list') {
-                        const list = Array.from(focusVVJids).map(j => `• ${j}`).join('\n') || "Aucune cible.";
-                        await socket.sendMessage(targetChat, { text: `📋 *Cibles Vue Unique :*\n${list}` }, { quoted: msg });
-                    } else if (action === 'add' || action === 'remove') {
-                        if (!target) return await socket.sendMessage(targetChat, { text: `❌ Spécifiez un numéro ou 'here'.` }, { quoted: msg });
-                        
-                        let jidToProcess = target === 'here' ? remoteJid : target.replace(/\D/g, '');
-                        if (jidToProcess.length < 5) return await socket.sendMessage(targetChat, { text: `❌ Cible invalide.` }, { quoted: msg });
+                        return await socket.sendMessage(targetChat, { text: `✅ Focus Vue Unique désactivé (toutes les VV seront capturées).` }, { quoted: msg });
+                    }
 
+                    if (action === 'add' || action === 'remove') {
+                        if (!rawTarget) return await socket.sendMessage(targetChat, { text: `❌ Spécifie un numéro, ex: ${currentPrefix}dazvv add 22955724800` }, { quoted: msg });
+                        const cleanNumber = rawTarget.replace(/\D/g, '');
+                        if (cleanNumber.length < 5) return await socket.sendMessage(targetChat, { text: `❌ Numéro invalide.` }, { quoted: msg });
                         if (action === 'add') {
-                            focusVVJids.add(jidToProcess);
-                            await socket.sendMessage(targetChat, { text: `✅ Cible ajoutée au focus Vue Unique.` }, { quoted: msg });
+                            focusVVJids.add(cleanNumber);
+                            return await socket.sendMessage(targetChat, { text: `✅ +${cleanNumber} ajouté au focus Vue Unique.` }, { quoted: msg });
                         } else {
-                            focusVVJids.delete(jidToProcess);
-                            await socket.sendMessage(targetChat, { text: `✅ Cible retirée du focus Vue Unique.` }, { quoted: msg });
+                            focusVVJids.delete(cleanNumber);
+                            return await socket.sendMessage(targetChat, { text: `✅ +${cleanNumber} retiré du focus Vue Unique.` }, { quoted: msg });
                         }
                     }
+
+                    if (action === 'addgroup' || action === 'removegroup') {
+                        if (!rawTarget) return await socket.sendMessage(targetChat, { text: `❌ Spécifie 'here' (groupe courant) ou un JID de groupe xxx@g.us.` }, { quoted: msg });
+                        let groupJid = null;
+                        if (rawTarget.toLowerCase() === 'here') {
+                            if (!remoteJid.endsWith('@g.us')) {
+                                return await socket.sendMessage(targetChat, { text: `❌ 'here' ne marche que quand tu envoies la commande *depuis* un groupe.` }, { quoted: msg });
+                            }
+                            groupJid = remoteJid;
+                        } else if (rawTarget.endsWith('@g.us')) {
+                            groupJid = rawTarget;
+                        } else {
+                            return await socket.sendMessage(targetChat, { text: `❌ JID de groupe invalide. Utilise 'here' ou un JID xxx@g.us.` }, { quoted: msg });
+                        }
+                        if (action === 'addgroup') {
+                            focusVVJids.add(groupJid);
+                            return await socket.sendMessage(targetChat, { text: `✅ Groupe ${groupJid} ajouté au focus Vue Unique.` }, { quoted: msg });
+                        } else {
+                            focusVVJids.delete(groupJid);
+                            return await socket.sendMessage(targetChat, { text: `✅ Groupe ${groupJid} retiré du focus Vue Unique.` }, { quoted: msg });
+                        }
+                    }
+
+                    await socket.sendMessage(targetChat, { text: `❌ Action inconnue. Utilise add/remove/addgroup/removegroup/list/off.` }, { quoted: msg });
                 } else if (cmd === 'dazsticker') {
                     const contextInfo = msg.message.extendedTextMessage?.contextInfo;
                     const quoted = contextInfo?.quotedMessage;
@@ -606,10 +657,27 @@ async function connectToWhatsApp() {
                 } else if (cmd === 'planstatus' || cmd === 'ps' || cmd === 'planmsg' || cmd === 'pm') {
                     const contextInfo = msg.message.extendedTextMessage?.contextInfo;
                     const quoted = contextInfo?.quotedMessage;
-                    const time = textLower.split(/\s+/)[1];
+                    const isMsg = (cmd === 'planmsg' || cmd === 'pm');
 
-                    if (!time || !/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(time)) {
-                        return await socket.sendMessage(targetChat, { text: `❌ Format d'heure invalide. Utilisez HH:mm (ex: 14:30).` }, { quoted: msg });
+                    // Reconstruit l'input temporel. Le dernier token d'un planmsg est
+                    // le numéro destinataire, donc on l'exclut. planstatus consomme
+                    // tout le reste comme date/heure (accepte HH:MM, JJ/MM HH:MM,
+                    // ou JJ/MM/AAAA HH:MM).
+                    const tokens = textContent.trim().split(/\s+/).slice(1);
+                    let targetToken = null;
+                    let scheduleTokens = tokens;
+                    if (isMsg && tokens.length > 0) {
+                        const last = tokens[tokens.length - 1];
+                        if (!/^\d{1,2}:\d{2}$/.test(last) && !/^\d{1,2}\/\d{1,2}(\/\d{2,4})?$/.test(last)) {
+                            targetToken = last;
+                            scheduleTokens = tokens.slice(0, -1);
+                        }
+                    }
+                    const scheduleInput = scheduleTokens.join(' ');
+
+                    const parsed = scheduler.parseSchedule(scheduleInput);
+                    if (parsed.error) {
+                        return await socket.sendMessage(targetChat, { text: `❌ ${parsed.error}\n\nExemples :\n- ${currentPrefix}${cmd} 14:30\n- ${currentPrefix}${cmd} 25/12 09:00${isMsg ? ' 22955724800' : ''}\n- ${currentPrefix}${cmd} 25/12/2026 09:00${isMsg ? ' 22955724800' : ''}` }, { quoted: msg });
                     }
 
                     if (!quoted) {
@@ -636,27 +704,50 @@ async function connectToWhatsApp() {
                     } else if (mediaType === 'audioMessage') {
                         const buffer = await downloadMediaMessage({ message: quoted }, 'buffer', {}, { logger: pino({ level: 'silent' }) });
                         messageToPlan = { audio: buffer, mimetype: quoted.audioMessage.mimetype, ptt: quoted.audioMessage.ptt };
+                    } else {
+                        return await socket.sendMessage(targetChat, { text: `❌ Type de message non supporté pour la programmation : ${mediaType}` }, { quoted: msg });
                     }
 
-                    if (cmd === 'planstatus' || cmd === 'ps') {
-                        scheduler.addTask({
+                    if (!isMsg) {
+                        const entry = scheduler.addTask({
                             type: 'status',
-                            time: time,
+                            ts: parsed.ts,
+                            label: parsed.label,
                             message: messageToPlan
                         });
-                        await socket.sendMessage(targetChat, { text: `✅ Statut programmé pour ${time} !` }, { quoted: msg });
+                        await socket.sendMessage(targetChat, { text: `✅ Statut programmé pour *${parsed.label}* (tâche #${entry.id}).` }, { quoted: msg });
                     } else {
-                        const target = textLower.split(/\s+/)[2] || (socket.user.id.split(':')[0] + '@s.whatsapp.net');
+                        const target = targetToken || (socket.user.id.split(':')[0]);
                         const cleanTarget = target.includes('@') ? target : (target.replace(/\D/g, '') + '@s.whatsapp.net');
-                        
-                        scheduler.addTask({
+
+                        const entry = scheduler.addTask({
                             type: 'message',
-                            time: time,
+                            ts: parsed.ts,
+                            label: parsed.label,
                             target: cleanTarget,
                             message: messageToPlan
                         });
-                        await socket.sendMessage(targetChat, { text: `✅ Message programmé pour ${time} vers ${cleanTarget} !` }, { quoted: msg });
+                        await socket.sendMessage(targetChat, { text: `✅ Message programmé pour *${parsed.label}* vers ${cleanTarget} (tâche #${entry.id}).` }, { quoted: msg });
                     }
+                } else if (cmd === 'planlist' || cmd === 'pl') {
+                    const tasks = scheduler.listTasks();
+                    if (tasks.length === 0) {
+                        return await socket.sendMessage(targetChat, { text: `📭 Aucune tâche programmée.` }, { quoted: msg });
+                    }
+                    const rows = tasks.map(t => {
+                        const typeLbl = t.type === 'status' ? '📢 Statut' : `💬 → ${t.target || '?'}`;
+                        return `#${t.id} • ${t.label} • ${typeLbl}`;
+                    }).join('\n');
+                    await socket.sendMessage(targetChat, { text: `⏰ *Tâches programmées* (${tasks.length})\n\n${rows}\n\nPour annuler : ${currentPrefix}plancancel <id>` }, { quoted: msg });
+                } else if (cmd === 'plancancel' || cmd === 'pc') {
+                    const idArg = textLower.split(/\s+/)[1];
+                    if (!idArg) return await socket.sendMessage(targetChat, { text: `❌ Spécifie l'id (ex: ${currentPrefix}plancancel 3). Liste avec ${currentPrefix}planlist.` }, { quoted: msg });
+                    const removed = scheduler.cancelTask(idArg);
+                    if (!removed) return await socket.sendMessage(targetChat, { text: `❌ Tâche #${idArg} introuvable.` }, { quoted: msg });
+                    await socket.sendMessage(targetChat, { text: `🗑️ Tâche #${removed.id} (${removed.type} - ${removed.label}) annulée.` }, { quoted: msg });
+                } else if (cmd === 'planreset') {
+                    const count = scheduler.clearTasks();
+                    await socket.sendMessage(targetChat, { text: `🧹 ${count} tâche(s) supprimée(s).` }, { quoted: msg });
                 } else if (cmd === 'dazconnect') {
                     const arg = textLower.split(/\s+/)[1];
                     if (arg === 'on') {
