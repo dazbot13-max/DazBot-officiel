@@ -194,9 +194,21 @@ const checkTasks = async (sock) => {
     }
 };
 
+let schedulerInterval = null;
+let tasksLoaded = false;
+
 const startScheduler = (sock) => {
-    load();
-    setInterval(() => checkTasks(sock), 15000);
+    // startScheduler() est appelé à chaque ouverture de connexion (y compris
+    // après une reconnexion). Sans nettoyer l'intervalle précédent, on
+    // accumulait N timers après N reconnexions — tous avec des références de
+    // socket mortes sauf le dernier, ce qui provoquait des échecs d'envoi
+    // (suivis de suppression de la tâche dans le catch) = tâches perdues.
+    if (schedulerInterval) clearInterval(schedulerInterval);
+    if (!tasksLoaded) {
+        load();
+        tasksLoaded = true;
+    }
+    schedulerInterval = setInterval(() => checkTasks(sock), 15000);
     console.log('[SCHEDULER] Système de planification démarré (polling 15s, persistance activée).');
 };
 
