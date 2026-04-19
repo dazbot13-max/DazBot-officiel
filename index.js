@@ -53,20 +53,27 @@ const msgRetryCounterCache = new NodeCache();
 
 console.log('[DEBUG] Constants and variables initialized.');
 
-// Réagit à un statut WhatsApp. Le serveur renvoie "not-acceptable" si
-// le statusJidList contient un JID en format @lid (adressage Baileys interne).
-// La seule combinaison qui passe chez WhatsApp est : [participantPn, meJid]
-// (numéro téléphonique du posteur + notre propre JID).
-// On garde un fallback vers le @lid au cas où participantPn serait absent.
+// Réagit à un statut WhatsApp.
+// Stratégie double-envoi pour que la réaction apparaisse vraiment sur le téléphone du poster :
+//   1. sendMessage('status@broadcast', ...) avec statusJidList → réaction visible dans le flux "Statuts"
+//   2. sendMessage(posterJid, ...) direct dans le chat privé du poster → déclenche la notif "a réagi à votre statut"
+// Sans l'étape 2, WhatsApp reçoit la réaction côté serveur mais ne l'affiche pas sur le mobile du poster
+// parce qu'il attend la notification privée qui n'a jamais été envoyée.
 async function tryStatusReact(socket, msg, emoji) {
     const meJid = socket.user?.id;
+    const meLid = socket.user?.lid;
     const participant = msg.key.participant;
     const participantPn = msg.key.participantPn;
 
+    // Étape 1 : réaction sur le broadcast status.
+    // On essaie plusieurs combinaisons de statusJidList pour couvrir PN et LID.
     const candidates = [];
     if (participantPn && meJid) candidates.push([participantPn, meJid]);
     if (participant && meJid && participant !== participantPn) candidates.push([participant, meJid]);
+    if (participantPn && meLid && meLid !== meJid) candidates.push([participantPn, meLid]);
+    if (participant && meLid && meLid !== meJid && participant !== participantPn) candidates.push([participant, meLid]);
 
+    let broadcastOk = false;
     for (const list of candidates) {
         try {
             await socket.sendMessage(
@@ -74,12 +81,29 @@ async function tryStatusReact(socket, msg, emoji) {
                 { react: { text: emoji, key: msg.key } },
                 { statusJidList: list }
             );
-            return true;
+            broadcastOk = true;
+            break;
         } catch (e) {
             console.log(`[REACT-RETRY] ${e.message} (list=${JSON.stringify(list)})`);
         }
     }
-    return false;
+
+    // Étape 2 : doublon en chat privé pour déclencher la notif mobile.
+    // On vise le vrai numéro téléphonique du poster (participantPn), avec fallback LID.
+    const posterJid = participantPn || participant;
+    if (posterJid && !posterJid.endsWith('@broadcast')) {
+        try {
+            await socket.sendMessage(
+                posterJid,
+                { react: { text: emoji, key: msg.key } }
+            );
+            console.log(`[REACT-PRIVATE] Doublon envoyé à ${posterJid}`);
+        } catch (e) {
+            console.log(`[REACT-PRIVATE-FAIL] ${posterJid}: ${e.message}`);
+        }
+    }
+
+    return broadcastOk;
 }
 
 // Helper to check if a number is allowed based on whitelist and blacklist
