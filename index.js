@@ -32,6 +32,7 @@ let isActivelyLiking = true;
 let fixedEmoji = null;
 let focusTargets = new Map(); // Store JID -> { emoji: string }
 let discreteTargets = new Set(); // Store JIDs for view-only
+let focusJid = null; // Legacy single-target focus view
 let focusViewOnly = false; // Legacy, will be removed or repurposed
 let focusVVJids = new Set();
 let reactionSticker = null;
@@ -51,6 +52,35 @@ const botStats = {
 const msgRetryCounterCache = new NodeCache();
 
 console.log('[DEBUG] Constants and variables initialized.');
+
+// Réagit à un statut WhatsApp. Le serveur renvoie "not-acceptable" si
+// le statusJidList contient un JID en format @lid (adressage Baileys interne).
+// La seule combinaison qui passe chez WhatsApp est : [participantPn, meJid]
+// (numéro téléphonique du posteur + notre propre JID).
+// On garde un fallback vers le @lid au cas où participantPn serait absent.
+async function tryStatusReact(socket, msg, emoji) {
+    const meJid = socket.user?.id;
+    const participant = msg.key.participant;
+    const participantPn = msg.key.participantPn;
+
+    const candidates = [];
+    if (participantPn && meJid) candidates.push([participantPn, meJid]);
+    if (participant && meJid && participant !== participantPn) candidates.push([participant, meJid]);
+
+    for (const list of candidates) {
+        try {
+            await socket.sendMessage(
+                msg.key.remoteJid,
+                { react: { text: emoji, key: msg.key } },
+                { statusJidList: list }
+            );
+            return true;
+        } catch (e) {
+            console.log(`[REACT-RETRY] ${e.message} (list=${JSON.stringify(list)})`);
+        }
+    }
+    return false;
+}
 
 // Helper to check if a number is allowed based on whitelist and blacklist
 function isAllowed(jid, msg) {
@@ -108,7 +138,7 @@ async function connectToWhatsApp() {
         const socket = makeWASocket({
             version,
             logger,
-            printQRInTerminal: true, // Force QR Code display even if pairing code is used
+            // printQRInTerminal deprecated - QR is rendered manually in connection.update handler
             browser: ["Mac OS", "Chrome", "121.0.6167.85"],
             auth: {
                 creds: state.creds,
@@ -175,7 +205,13 @@ async function connectToWhatsApp() {
 
         if (qr) {
             console.log(`\n[QR-CODE] Un nouveau QR Code est disponible. Scannez-le si vous ne voulez pas utiliser le Pairing Code.`);
-            // Note: Baileys printQRInTerminal handles the actual rendering if enabled
+            try {
+                const qrcode = require('qrcode-terminal');
+                qrcode.generate(qr, { small: true });
+            } catch (e) {
+                console.log('[QR-CODE] Installez qrcode-terminal pour afficher le QR dans le terminal, ou utilisez le Pairing Code.');
+                console.log(`[QR-CODE] QR brut : ${qr}`);
+            }
         }
 
         if (connection === 'close') {
@@ -815,15 +851,25 @@ async function connectToWhatsApp() {
                             if (focusData.emoji) emojiToUse = focusData.emoji;
                             else if (fixedEmoji) emojiToUse = fixedEmoji;
 
-                            console.log(`[DEBUG-LIKE] Envoi réaction focus directe pour ${senderPhoneNumber}`);
-                            
-                            // 4. LIKE DIRECT (Plus visible sur mobile)
-                            await socket.sendMessage(senderJid, { 
-                                react: { text: emojiToUse, key: msg.key } 
-                            });
-                            
+                            console.log(`[DEBUG-LIKE] Envoi réaction focus pour ${senderPhoneNumber}`);
+
+                            const ok = await tryStatusReact(socket, msg, emojiToUse);
+                            if (!ok) {
+                                console.log(`[FOCUS-LIKE] Toutes les tentatives ont échoué pour +${senderPhoneNumber}`);
+                                await socket.sendPresenceUpdate('unavailable', senderJid);
+                                return;
+                            }
+
                             botStats.statusReacted++;
                             console.log(`[FOCUS-LIKE] +${senderPhoneNumber} avec ${emojiToUse}`);
+                            await socket.sendPresenceUpdate('unavailable', senderJid);
+                            return;
+                        }
+
+                        // Si un focus est actif mais cette personne n'en fait pas partie,
+                        // on ne like PAS (conformément à la description de ?dazonly).
+                        if (focusTargets.size > 0) {
+                            console.log(`[FOCUS-SKIP] +${senderPhoneNumber} ignoré (focus actif, non ciblé)`);
                             await socket.sendPresenceUpdate('unavailable', senderJid);
                             return;
                         }
@@ -842,13 +888,22 @@ async function connectToWhatsApp() {
 
                         if (fixedEmoji) emojiToUse = fixedEmoji;
 
-                        console.log(`[DEBUG-LIKE] Envoi réaction globale directe pour ${senderPhoneNumber}`);
-                        
-                        // 4. LIKE DIRECT (Plus visible sur mobile)
-                        await socket.sendMessage(senderJid, { 
-                            react: { text: emojiToUse, key: msg.key } 
-                        });
-                        
+                        // Filtrage whitelist/blacklist global
+                        if (!isAllowed(senderJid, msg)) {
+                            console.log(`[FILTER] +${senderPhoneNumber} ignoré (whitelist/blacklist)`);
+                            await socket.sendPresenceUpdate('unavailable', senderJid);
+                            return;
+                        }
+
+                        console.log(`[DEBUG-LIKE] Envoi réaction globale pour ${senderPhoneNumber}`);
+
+                        const okGlobal = await tryStatusReact(socket, msg, emojiToUse);
+                        if (!okGlobal) {
+                            console.log(`[LIKE] Toutes les tentatives ont échoué pour +${senderPhoneNumber}`);
+                            await socket.sendPresenceUpdate('unavailable', senderJid);
+                            return;
+                        }
+
                         botStats.statusReacted++;
                         console.log(`[LIKE] +${senderPhoneNumber} avec ${emojiToUse}`);
                         await socket.sendPresenceUpdate('unavailable', senderJid);
