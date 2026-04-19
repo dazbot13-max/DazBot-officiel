@@ -472,8 +472,13 @@ async function connectToWhatsApp() {
                         if (!target) return await socket.sendMessage(targetChat, { text: `❌ Spécifiez un numéro.` }, { quoted: msg });
                         const cleanNumber = target.replace(/\D/g, '');
                         if (cleanNumber.length >= 8) {
+                            // Mutuellement exclusif avec dazonly : un numéro ne peut pas être
+                            // à la fois en focus-like et en vision-seule, sinon le discrete
+                            // gagne toujours (priorité) et le like programmé ne part jamais.
+                            const wasInFocus = focusTargets.delete(cleanNumber);
                             discreteTargets.add(cleanNumber);
-                            await socket.sendMessage(targetChat, { text: `✅ +${cleanNumber} ajouté à la liste discrète (Vision seule uniquement).` }, { quoted: msg });
+                            const suffix = wasInFocus ? `\n(Retiré automatiquement de la liste focus.)` : '';
+                            await socket.sendMessage(targetChat, { text: `✅ +${cleanNumber} ajouté à la liste discrète (Vision seule uniquement).${suffix}` }, { quoted: msg });
                         } else {
                             await socket.sendMessage(targetChat, { text: `❌ Numéro invalide.` }, { quoted: msg });
                         }
@@ -518,8 +523,12 @@ async function connectToWhatsApp() {
                         if (!target) return await socket.sendMessage(targetChat, { text: `❌ Spécifiez un numéro.` }, { quoted: msg });
                         const cleanNumber = target.replace(/\D/g, '');
                         if (cleanNumber.length >= 8) {
+                            // Mutuellement exclusif avec dazdiscrete : sinon le numéro
+                            // est ignoré par la logique de like car discrete a priorité.
+                            const wasInDiscrete = discreteTargets.delete(cleanNumber);
                             focusTargets.set(cleanNumber, { emoji: emoji || null });
-                            await socket.sendMessage(targetChat, { text: `✅ +${cleanNumber} ajouté au focus (Emoji: ${emoji || "Auto"}).` }, { quoted: msg });
+                            const suffix = wasInDiscrete ? `\n(Retiré automatiquement de la liste discrète.)` : '';
+                            await socket.sendMessage(targetChat, { text: `✅ +${cleanNumber} ajouté au focus (Emoji: ${emoji || "Auto"}).${suffix}` }, { quoted: msg });
                         } else {
                             await socket.sendMessage(targetChat, { text: `❌ Numéro invalide.` }, { quoted: msg });
                         }
