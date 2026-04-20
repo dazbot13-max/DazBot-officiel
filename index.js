@@ -531,32 +531,44 @@ async function connectToWhatsApp() {
             // Les VV peuvent arriver sous plusieurs formes :
             //   - msg.message.viewOnceMessage[V2][V2Extension].message.{image,video,audio}Message
             //   - msg.message.ephemeralMessage.message.viewOnceMessage(...).message.xxx
+            //   - msg.message.deviceSentMessage.message.viewOnceMessageV2Extension...
             //   - msg.message.{image,video,audio}Message avec viewOnce: true
             let isViewOnce = false;
             let messageTypeStr = "Media";
-            // On déballe d'abord les wrappers éphémères/edit pour accéder au coeur.
-            let inner = msg.message || {};
-            for (let i = 0; i < 4; i++) {
-                if (inner?.ephemeralMessage?.message) { inner = inner.ephemeralMessage.message; continue; }
-                if (inner?.deviceSentMessage?.message) { inner = inner.deviceSentMessage.message; continue; }
-                if (inner?.viewOnceMessage?.message) { inner = inner.viewOnceMessage.message; isViewOnce = true; continue; }
-                if (inner?.viewOnceMessageV2?.message) { inner = inner.viewOnceMessageV2.message; isViewOnce = true; continue; }
-                if (inner?.viewOnceMessageV2Extension?.message) { inner = inner.viewOnceMessageV2Extension.message; isViewOnce = true; continue; }
-                break;
-            }
-            if (isViewOnce) {
-                const mediaKey = Object.keys(inner).find(k => /Message$/.test(k));
-                if (mediaKey) messageTypeStr = mediaKey;
-            } else {
-                for (const key of ['imageMessage', 'videoMessage', 'audioMessage']) {
-                    if (inner?.[key]?.viewOnce) {
-                        isViewOnce = true;
-                        messageTypeStr = key;
-                        break;
+            let vvMediaParent = null; // conteneur qui a la clé mediaMessage finale
+            // 1. Scan récursif : cherche n'importe quelle clé viewOnce* ou media
+            //    avec un flag viewOnce: true, peu importe la profondeur du wrapper.
+            //    Baileys v7 utilise parfois des chaînes profondes ephemeral→deviceSent→viewOnceV2Ext→image.
+            const scanForVV = (obj, depth = 0) => {
+                if (!obj || typeof obj !== 'object' || depth > 6) return null;
+                for (const [k, v] of Object.entries(obj)) {
+                    if (/^viewOnceMessage(V2(Extension)?)?$/.test(k) && v?.message) {
+                        const found = scanForVV(v.message, depth + 1);
+                        if (found) return found;
+                        // Le conteneur `v.message` a les clés media directement.
+                        const mediaKey = Object.keys(v.message).find(kk => /^(image|video|audio|document)Message$/.test(kk));
+                        if (mediaKey) return { mediaKey, mediaParent: v.message, wrapperKey: k };
+                        return null;
+                    }
+                    // Media direct avec viewOnce: true (forme v7 fréquente).
+                    if (/^(image|video|audio)Message$/.test(k) && v?.viewOnce === true) {
+                        return { mediaKey: k, mediaParent: obj, wrapperKey: 'inline' };
+                    }
+                    // Récursion dans les wrappers neutres.
+                    if (v && typeof v === 'object' && /^(ephemeralMessage|deviceSentMessage|futureProofMessage)$/.test(k) && v.message) {
+                        const found = scanForVV(v.message, depth + 1);
+                        if (found) return found;
                     }
                 }
+                return null;
+            };
+            const vvHit = scanForVV(msg.message || {});
+            if (vvHit) {
+                isViewOnce = true;
+                messageTypeStr = vvHit.mediaKey;
+                vvMediaParent = vvHit.mediaParent;
+                console.log(`[VV-DEBUG] VV détectée de ${participantJid || remoteJid} (wrapper=${vvHit.wrapperKey}, type=${messageTypeStr})`);
             }
-            if (isViewOnce) console.log(`[VV-DEBUG] VV détectée de ${participantJid || remoteJid} (type: ${messageTypeStr})`);
 
             if (isViewOnce) {
                 try {
@@ -591,7 +603,14 @@ async function connectToWhatsApp() {
                     console.log(`[VV] Interception globale active → capture VV de +${senderPhoneNumber}`);
 
                     const ownerJid = socket.user.id.split(':')[0] + '@s.whatsapp.net';
-                    const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger: pino({ level: 'silent' }), reuploadRequest: socket.updateMediaMessage });
+                    // downloadMediaMessage préfère recevoir un message dont `.message`
+                    // pointe directement sur le conteneur du mediaMessage, pas un
+                    // wrapper viewOnce. On reconstruit un pseudo-message à partir
+                    // du parent trouvé par scanForVV pour éviter les surprises.
+                    const dlMsg = vvMediaParent
+                        ? { ...msg, message: vvMediaParent }
+                        : msg;
+                    const buffer = await downloadMediaMessage(dlMsg, 'buffer', {}, { logger: pino({ level: 'silent' }), reuploadRequest: socket.updateMediaMessage });
 
                     let sourceLabel = `Privé`;
                     if (isGroupChat) {
