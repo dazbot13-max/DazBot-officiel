@@ -45,12 +45,22 @@ console.log('[DEBUG] Bot starting script execution...');
 // seulement si une clé est présente, pour que l'absence de clé n'empêche pas
 // le bot de démarrer. L'auto-réponse elle-même reste gouvernée par le toggle
 // `config.aiAutoReply` (default : false).
+// Nom de la variable d'env attendue pour le provider actuellement configuré.
+// Utilisé pour les messages d'init / de statut / d'erreur côté DM owner.
+function envKeyForProvider(providerName) {
+    switch ((providerName || '').toLowerCase()) {
+        case 'openai': return 'OPENAI_API_KEY';
+        case 'openrouter': return 'OPENROUTER_API_KEY';
+        default: return 'GEMINI_API_KEY'; // gemini par défaut
+    }
+}
+
 let aiService = null;
 try {
     aiService = new AIService(config);
     console.log(`[AI] Service prêt (provider=${aiService.provider}, model=${aiService._currentModel()}, autoReply=${config.aiAutoReply ? 'ON' : 'OFF'}).`);
 } catch (e) {
-    console.log(`[AI] Service non initialisé: ${e.message}. Renseigne OPENROUTER_API_KEY (ou OPENAI_API_KEY) puis redémarre pour activer ?dazai.`);
+    console.log(`[AI] Service non initialisé: ${e.message}. Renseigne ${envKeyForProvider(config.aiProvider)} dans .env puis redémarre pour activer ?dazai.`);
 }
 
 // Throttle des requêtes IA par conversation : si le bot traite déjà un message
@@ -1186,7 +1196,7 @@ async function connectToWhatsApp() {
                     } else {
                         const providerInfo = aiService
                             ? `🟢 init (${aiService.provider} / ${aiService._currentModel()})`
-                            : `🔴 non init — ajoute OPENROUTER_API_KEY`;
+                            : `🔴 non init — ajoute ${envKeyForProvider(config.aiProvider)}`;
                         await socket.sendMessage(targetChat, { text: `🤖 *Chatbot IA DazBot*\n\n- Service : ${providerInfo}\n- Auto-reply : ${config.aiAutoReply ? '🟢 ON' : '🔴 OFF'}\n\n*Commandes*\n- ${currentPrefix}dazai on / off\n- ${currentPrefix}dazai stats\n- ${currentPrefix}dazai clear           (cette conversation)\n- ${currentPrefix}dazai clear all       (toutes)\n- ${currentPrefix}dazai model <nom>\n- ${currentPrefix}dazai reload           (recharge personality.json)` }, { quoted: msg });
                     }
                 } else if (cmd === 'menu' || cmd === 'help' || cmd === 'h' || cmd === 'guide') {
@@ -1385,11 +1395,19 @@ _© 2025 · DAZBOT by DAZ_`;
                                     const ownerJid = socket.user?.id?.split(':')[0] + '@s.whatsapp.net';
                                     if (ownerJid && !aiErrorsNotified.has(status)) {
                                         aiErrorsNotified.add(status);
+                                        // Messages & URLs de récupération spécifiques au provider actif.
+                                        const provider = aiService.provider;
+                                        const urls = {
+                                            gemini:     { keys: 'https://aistudio.google.com/apikey',               billing: 'https://ai.google.dev/pricing' },
+                                            openrouter: { keys: 'https://openrouter.ai/keys',                       billing: 'https://openrouter.ai/settings/credits' },
+                                            openai:     { keys: 'https://platform.openai.com/api-keys',             billing: 'https://platform.openai.com/settings/organization/billing' },
+                                        }[provider] || { keys: '(doc provider)', billing: '(doc provider)' };
+                                        const providerLabel = provider.charAt(0).toUpperCase() + provider.slice(1);
                                         const reason = status === 402
-                                            ? `💳 Crédits OpenRouter épuisés.\nRecharge ton compte : https://openrouter.ai/settings/credits`
+                                            ? `💳 Quota ${providerLabel} épuisé (paiement requis).\nVérifie ta facturation : ${urls.billing}`
                                             : status === 401
-                                                ? `🔑 Clé API invalide ou révoquée.\nRégénère une clé : https://openrouter.ai/keys`
-                                                : `⛔ Compte bloqué par le provider (status 403).`;
+                                                ? `🔑 Clé ${providerLabel} invalide ou révoquée.\nRégénère une clé : ${urls.keys}`
+                                                : `⛔ Accès refusé par ${providerLabel} (status 403) — quota gratuit dépassé, modèle indisponible dans ta région ou compte bloqué.`;
                                         try {
                                             await socket.sendMessage(ownerJid, { text: `⚠️ *Chatbot IA en échec*\n\n${reason}\n\n_L'auto-reply est toujours ON mais ne peut pas répondre tant que ce n'est pas résolu. Fais ${config.prefix || '?'}dazai off pour le couper._` });
                                         } catch (_) {}
