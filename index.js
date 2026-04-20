@@ -1544,58 +1544,75 @@ async function connectToWhatsApp() {
 
                     const menuText =
 `╭─────────────────────────╮
-│   ⚡ *D A Z · B O T* ⚡   │
-│    _· command center ·_    │
+│  🤖  *D A Z B O T*   ·   │
+│    _command center v1_    │
 ╰─────────────────────────╯
 
-  ◈ _Préfixe_   : *${p}*
-  ◈ _Uptime_    : *${uptime}*
-  ◈ _Chatbot_   : ${aiDot} *${config.aiAutoReply ? 'ON' : 'OFF'}*
-  ◈ _Owner_     : *${ownerTag}*
+┌─ ⚙️ *État*
+│   Préfixe  : *${p}*
+│   Uptime   : *${uptime}*
+│   Chatbot  : ${aiDot} *${config.aiAutoReply ? 'ON' : 'OFF'}*
+│   Owner    : *${ownerTag}*
+│
+└─ _📎 = réponds à un message_
 
-_📎 = réponds à un message pour utiliser la commande_
 
-━━━━━━━━  🎯  *LIKE CIBLÉ*  ━━━━━━━━
-   *${p}dazonly add* _num_ _emoji_
-   _ex · ${p}dazonly add 22955724800 🔥_
-   *${p}dazonly* _remove · list · off_
+🎯  *LIKE CIBLÉ*
+ • *${p}dazonly add* _num_ _emoji_
+ • *${p}dazonly remove* _num_
+ • *${p}dazonly list*
+ • *${p}dazonly off*
 
-━━━━  🟢  *STATUS · VISION*  ━━━━
-   *${p}dazstatus on|off*     _like global_
-   *${p}dazview on|off*       _vision seule_
-   *${p}dazdiscrete* _add · list_   _num_
-   *${p}dazstatusuni* _emoji|random_
-   *${p}dazsticker* 📎 · *${p}dazstats*
 
-━━━━━  🛡️  *PROTECTION*  ━━━━━
-   *${p}antidelete on|off*
-   *${p}dazantionly* _add · remove · list · off_
-   *${p}dazvv on|off*        _vue-unique_
+🟢  *STATUS · VISION*
+ • *${p}dazstatus on|off*  _like tous_
+ • *${p}dazview on|off*    _vision seule_
+ • *${p}dazdiscrete add* _num_
+ • *${p}dazdiscrete list*
+ • *${p}dazstatusuni* _emoji|random_
+ • *${p}dazsticker*  📎
+ • *${p}dazstats*
 
-━━━━━  📅  *PLANIFICATEUR*  ━━━━━
-   *${p}ps* _HH:MM_  📎           _statut_
-   _· ${p}ps JJ/MM HH:MM_
-   _· ${p}ps JJ/MM/AAAA HH:MM_
-   *${p}pm* _HH:MM num_  📎     _privé_
-   *${p}planlist* · *${p}plancancel* _id_
-   *${p}planreset*
 
-━━━━━━  🤖  *CHATBOT IA*  ━━━━━━
-   *${p}dazai*                 _dashboard_
-   *${p}dazai on|off*          _activer_
-   *${p}dazai provider* _nom_   _gemini·groq·…_
-   *${p}dazai chain* _p1 p2…_    _ordre fallback_
-   *${p}dazai allow · block · romantic*
-   *${p}dazai model · reload · clear · stats*
+🛡️  *PROTECTION*
+ • *${p}antidelete on|off*
+ • *${p}dazantionly add* _num_
+ • *${p}dazantionly remove|list|off*
+ • *${p}dazvv on|off*  _vue-unique_
 
-━━━━━━  ⚙️  *CONFIG*  ━━━━━━
-   *${p}setprefix* _symbole_   _ex: ${p}setprefix !_
-   *${p}dazconnect* _show · on · off_
-   *${p}dazreset*   _reset focus_
-   *${p}host*       _infos serveur_
 
-━━━━━━━━━━━━━━━━━━━━━━━━━
-       _© 2025 · DAZBOT · by ${ownerTag}_`;
+📅  *PLANIFICATEUR*
+ • *${p}ps* _HH:MM_  📎
+ • *${p}ps* _JJ/MM HH:MM_  📎
+ • *${p}ps* _JJ/MM/AAAA HH:MM_  📎
+ • *${p}pm* _HH:MM num_  📎
+ • *${p}planlist*
+ • *${p}plancancel* _id_
+ • *${p}planreset*
+
+
+🤖  *CHATBOT IA*
+ • *${p}dazai*            _dashboard_
+ • *${p}dazai on|off*
+ • *${p}dazai provider* _nom_
+ • *${p}dazai chain* _p1 p2 …_
+ • *${p}dazai allow* _add|remove|list_
+ • *${p}dazai block* _add|remove|list_
+ • *${p}dazai romantic* _add|remove|list_
+ • *${p}dazai model* _nom_
+ • *${p}dazai reload*
+ • *${p}dazai clear* [_all_]
+ • *${p}dazai stats*
+
+
+⚙️  *CONFIG*
+ • *${p}setprefix* _symbole_
+ • *${p}dazconnect* _show|on|off_
+ • *${p}dazreset*   _reset focus_
+ • *${p}host*       _infos serveur_
+
+─────────────────────────
+   _© 2025 · DAZBOT · ${ownerTag}_`;
                     await socket.sendMessage(targetChat, { text: menuText }, { quoted: msg });
                 }
 
