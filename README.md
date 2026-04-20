@@ -48,6 +48,15 @@ Programme l'envoi de messages **privés** à l'heure et la date voulues. Survit 
 
 **Tous les types de médias** sont supportés : texte, image, vidéo, audio. Il suffit de répondre au message voulu avec la commande.
 
+### 🎬 Message de connexion (validé)
+À chaque connexion / reconnexion, le bot t'envoie dans ta discussion perso :
+- une **bannière image** (URL configurable, téléchargée à la volée, pas de fichier local)
+- une **citation du haut** en italique
+- le **cadre d'état** : propriétaire, numéro, personne réellement connectée, mode
+- une **citation du bas** en italique
+
+Tout est paramétrable dans `config.js` via `bootBannerUrl`, `bootQuotes`, `ownerName`, `ownerNumber` (voir [Configuration](#configuration)).
+
 ### 👁️ Autre
 - `?dazsticker` (réponse à un sticker) — téléchargement
 - `?dazstats` — statistiques globales + TOP 5 des contacts
@@ -77,15 +86,37 @@ npm install
 
 ```js
 module.exports = {
-    phoneNumber: "22947726871",        // TON numéro complet SANS le +
+    prefix: "?",                       // préfixe des commandes
+    phoneNumber: "22947726871",        // TON numéro d'appairage (SANS le +)
+    usePairingCode: true,              // pairing code au lieu du QR
     likeMyOwnStatus: true,
     reactionEmojis: ["❤️", "🔥", "😂", "👏", "💯"],
     autoReplyMessage: "",              // optionnel : msg privé après like
     whitelist: [],
     blacklist: [],
-    timezone: "Africa/Porto-Novo"      // fuseau pour ?planstatus / ?planmsg
+    timezone: "Africa/Porto-Novo",     // fuseau pour ?planstatus / ?planmsg
+
+    // Message de connexion (envoyé en DM à chaque boot)
+    sendWelcomeMessage: true,
+    ownerName: "Daziano",              // nom affiché (fallback: pushName WA)
+    ownerNumber: "22955724800",        // numéro owner affiché (peut différer du pairing)
+    bootBannerUrl: "https://i.postimg.cc/rFR6bHgL/17762702118f23.png",
+    bootQuotes: [                      // [0] = haut, [1] = bas
+        "Et tout ça 🤒, c'est le destin 🫠🤲🧎",
+        "St4y F0cuS, St4Y D3termi4t3 🫠🤲🧎"
+    ],
+
+    // Anti-Delete
+    antiDeleteEnabled: true,
+    antiDeleteChat: ""                 // vide = DM perso (recommandé)
 };
 ```
+
+**Options clés du message de connexion :**
+- `bootBannerUrl` : URL directe d'une image. Laisse vide pour envoyer uniquement le texte.
+- `bootQuotes` : tableau, la 1re apparaît **au-dessus** du cadre, la 2e **en-dessous**. Ajoute-en autant que tu veux, seules les 2 premières sont utilisées.
+- `ownerName` / `ownerNumber` : personnalisation de l'identité. Si `ownerName` est vide, le bot prend ton pushName WhatsApp. Si `ownerNumber` est vide, il prend le numéro appairé.
+- `sendWelcomeMessage: false` pour couper complètement le message de boot.
 
 ### Premier démarrage (appairage)
 
