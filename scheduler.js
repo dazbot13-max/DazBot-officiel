@@ -198,9 +198,18 @@ const checkTasks = async (sock) => {
         console.log(`[SCHEDULER] Exécution de la tâche #${task.id} (${task.type}) - cible ${task.label}`);
         try {
             if (task.type === 'status') {
+                // Sans `statusJidList`, Baileys poste le statut sans audience : il est
+                // uploadé côté serveur mais invisible à tous les contacts. On fournit
+                // donc la liste des contacts connus récupérée via le callback fourni
+                // par index.js (events contacts.upsert + fallback messages.upsert).
+                const jidList = typeof statusJidListProvider === 'function'
+                    ? (statusJidListProvider() || [])
+                    : [];
+                console.log(`[SCHEDULER] Publication statut avec ${jidList.length} destinataire(s).`);
                 await sock.sendMessage('status@broadcast', task.message, {
                     backgroundColor: task.backgroundColor || '#000000',
-                    font: 1
+                    font: 1,
+                    statusJidList: jidList
                 });
             } else if (task.type === 'message') {
                 await sock.sendMessage(task.target, task.message);
@@ -225,14 +234,18 @@ const checkTasks = async (sock) => {
 
 let schedulerInterval = null;
 let tasksLoaded = false;
+let statusJidListProvider = null;
 
-const startScheduler = (sock) => {
+const startScheduler = (sock, options = {}) => {
     // startScheduler() est appelé à chaque ouverture de connexion (y compris
     // après une reconnexion). Sans nettoyer l'intervalle précédent, on
     // accumulait N timers après N reconnexions — tous avec des références de
     // socket mortes sauf le dernier, ce qui provoquait des échecs d'envoi
     // (suivis de suppression de la tâche dans le catch) = tâches perdues.
     if (schedulerInterval) clearInterval(schedulerInterval);
+    if (typeof options.getStatusJidList === 'function') {
+        statusJidListProvider = options.getStatusJidList;
+    }
     if (!tasksLoaded) {
         load();
         tasksLoaded = true;

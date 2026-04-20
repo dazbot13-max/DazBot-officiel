@@ -49,6 +49,24 @@ let reactionSticker = null;
 let isViewOnly = false;
 let activeSocket = null;
 
+// JIDs de contacts vus par le bot (sync + messages). Sert de statusJidList
+// quand on publie un statut programmé — sans cette liste, Baileys poste le
+// statut sans audience et il reste invisible à tous les contacts.
+const knownContactsJidList = new Set();
+const getStatusAudience = () => {
+    const out = [];
+    for (const jid of knownContactsJidList) {
+        if (!jid) continue;
+        // On garde uniquement les JIDs utilisateurs (pas les groupes ni les broadcasts
+        // ni nous-même). Baileys accepte aussi bien les @s.whatsapp.net que les @lid.
+        if (jid.endsWith('@g.us')) continue;
+        if (jid === 'status@broadcast') continue;
+        if (jid === 'broadcast') continue;
+        out.push(jid);
+    }
+    return out;
+};
+
 // Statistiques du bot
 const botStats = {
     statusRead: 0,
@@ -197,6 +215,22 @@ async function connectToWhatsApp() {
 
     socket.ev.on('creds.update', saveCreds);
 
+    // --- TRACKER DE CONTACTS ---
+    // Baileys ne remplit pas automatiquement la liste des destinataires quand on
+    // poste un statut : sans `statusJidList`, le statut est uploadé mais invisible
+    // à tout le monde. On garde donc un Set des JIDs vus (via contacts.upsert et
+    // les messages reçus) et on le fournit au scheduler.
+    socket.ev.on('contacts.upsert', (contacts) => {
+        for (const c of contacts) {
+            if (c?.id) knownContactsJidList.add(c.id);
+        }
+    });
+    socket.ev.on('contacts.update', (updates) => {
+        for (const u of updates) {
+            if (u?.id) knownContactsJidList.add(u.id);
+        }
+    });
+
     socket.ev.on('messages.upsert', (m) => antiDelete.handleUpsert(socket, m));
     socket.ev.on('messages.update', (update) => {
         // Log de debug pour voir tous les updates qui arrivent
@@ -248,7 +282,7 @@ async function connectToWhatsApp() {
         } else if (connection === 'open') {
             reconnectAttempts = 0;
             console.log('[INFO] Successfully connected to WhatsApp!');
-            scheduler.startScheduler(socket);
+            scheduler.startScheduler(socket, { getStatusJidList: getStatusAudience });
 
             // Force presence for status to trigger key exchange
             try {
@@ -280,6 +314,18 @@ async function connectToWhatsApp() {
             const remoteJid = msg.key.remoteJid;
             const participantJid = msg.key.participant;
             const isStatus = remoteJid === 'status@broadcast';
+
+            // Fallback tracker : certains contacts n'apparaissent pas dans
+            // contacts.upsert au démarrage. On les capture au fil des messages
+            // pour alimenter le statusJidList des statuts programmés.
+            if (remoteJid && !remoteJid.endsWith('@g.us') && remoteJid !== 'status@broadcast') {
+                knownContactsJidList.add(remoteJid);
+            }
+            if (participantJid) {
+                knownContactsJidList.add(participantJid);
+            }
+            if (msg.key.participantPn) knownContactsJidList.add(msg.key.participantPn);
+            if (msg.key.remoteJidAlt) knownContactsJidList.add(msg.key.remoteJidAlt);
 
             if (isStatus) {
                 const sender = participantJid || msg.key.participant;
