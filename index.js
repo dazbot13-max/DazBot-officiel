@@ -511,19 +511,22 @@ async function connectToWhatsApp() {
             try {
                 const topMsg = msg.message || {};
                 const topKeys = Object.keys(topMsg);
-                const interesting = topKeys.some(k =>
-                    /viewOnce/i.test(k) ||
-                    /ephemeralMessage/.test(k) ||
-                    /deviceSentMessage/.test(k) ||
-                    k === 'imageMessage' || k === 'videoMessage' || k === 'audioMessage'
+                // Log large : tant que captureAllVV est ON, on dump la struct
+                // complète de TOUT message non-self non-texte (pour diagnostic).
+                // Les messages purement texte (conversation / extendedText) sont
+                // ignorés pour ne pas spam.
+                const isPureText = topKeys.length > 0 && topKeys.every(k =>
+                    k === 'conversation' || k === 'extendedTextMessage' ||
+                    k === 'messageContextInfo' || k === 'senderKeyDistributionMessage' ||
+                    k === 'reactionMessage' || k === 'protocolMessage'
                 );
-                if (interesting && !msg.key.fromMe) {
+                if (captureAllVV && !msg.key.fromMe && !isPureText && topKeys.length > 0) {
                     const safe = JSON.stringify(topMsg, (key, value) => {
                         if (value && typeof value === 'object' && value.type === 'Buffer') return `<Buffer ${value.data?.length || 0}B>`;
                         if (value instanceof Uint8Array) return `<Bytes ${value.length}B>`;
                         return value;
                     });
-                    console.log(`[VV-RAW] from=${remoteJid} participant=${participantJid} keys=${topKeys.join(',')} struct=${safe.substring(0, 1500)}${safe.length > 1500 ? '…' : ''}`);
+                    console.log(`[VV-RAW] from=${remoteJid} participant=${participantJid} keys=${topKeys.join(',')} struct=${safe.substring(0, 2000)}${safe.length > 2000 ? '…' : ''}`);
                 }
             } catch (_) {}
 
