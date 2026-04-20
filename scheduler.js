@@ -202,12 +202,17 @@ const checkTasks = async (sock) => {
                 // uploadé côté serveur mais invisible à tous les contacts. On fournit
                 // donc la liste des contacts connus récupérée via le callback fourni
                 // par index.js (events contacts.upsert + fallback messages.upsert).
-                const jidList = typeof statusJidListProvider === 'function'
-                    ? (statusJidListProvider() || [])
-                    : [];
-                console.log(`[SCHEDULER] Publication statut avec ${jidList.length} destinataire(s).`);
+                let jidList = [];
+                if (typeof statusJidListProvider === 'function') {
+                    const raw = statusJidListProvider();
+                    // Le provider peut être sync ou async : on await dans les 2 cas.
+                    jidList = (raw && typeof raw.then === 'function')
+                        ? ((await raw) || [])
+                        : (raw || []);
+                }
+                console.log(`[SCHEDULER] Publication statut avec ${jidList.length} destinataire(s): ${jidList.join(', ')}`);
                 if (jidList.length === 0) {
-                    console.warn('[SCHEDULER] ⚠️ Aucun destinataire dans la liste — le statut va sûrement être invisible à tous. Vérifie que syncFullHistory est true et que le bot a fini sa sync.');
+                    console.warn('[SCHEDULER] ⚠️ Aucun destinataire dans la liste — le statut va sûrement être invisible à tous.');
                 }
                 await sock.sendMessage('status@broadcast', task.message, {
                     backgroundColor: task.backgroundColor || '#000000',

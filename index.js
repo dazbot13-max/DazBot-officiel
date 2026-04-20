@@ -53,8 +53,15 @@ let activeSocket = null;
 // quand on publie un statut programmé — sans cette liste, Baileys poste le
 // statut sans audience et il reste invisible à tous les contacts.
 const knownContactsJidList = new Set();
-const getStatusAudience = () => {
+
+// getStatusAudience devient async pour pouvoir résoudre les @lid → @s.whatsapp.net
+// via le LIDMappingStore. Baileys v7 dérive les devices depuis les JIDs dans la
+// statusJidList mais préfère nettement les numéros (s.whatsapp.net) pour établir
+// les sessions Signal proprement. On inclut les deux formats quand c'est dispo.
+const getStatusAudience = async () => {
     const out = new Set();
+    const sock = activeSocket;
+
     for (const jid of knownContactsJidList) {
         if (!jid) continue;
         if (jid.endsWith('@g.us')) continue;
@@ -64,25 +71,33 @@ const getStatusAudience = () => {
         if (domain !== 's.whatsapp.net' && domain !== 'lid') continue;
         const bareUser = user.split(':')[0];
         if (!bareUser) continue;
-        out.add(`${bareUser}@${domain}`);
+
+        if (domain === 'lid') {
+            // Essaie de résoudre en numéro — si ça marche, on préfère le format PN.
+            try {
+                const pn = await sock?.signalRepository?.lidMapping?.getPNForLID?.(`${bareUser}@lid`);
+                if (pn) {
+                    const bare = pn.split(':')[0].split('@')[0];
+                    out.add(`${bare}@s.whatsapp.net`);
+                    continue;
+                }
+            } catch (_) {}
+            out.add(`${bareUser}@lid`);
+        } else {
+            out.add(`${bareUser}@s.whatsapp.net`);
+        }
     }
-    // On AJOUTE nos propres JIDs (PN + LID) pour que le statut apparaisse
-    // aussi dans la liste de statuts de notre propre téléphone — sinon
-    // WhatsApp considère qu'on n'est pas destinataire et on ne le voit pas
-    // apparaître dans le flux de statuts à côté de celui des contacts.
+
+    // On ajoute nos propres JIDs pour que le statut apparaisse dans le feed
+    // Statuts de nos autres devices (téléphone + autres WA Web éventuels).
     try {
-        const sock = activeSocket;
         const meId = sock?.user?.id || sock?.authState?.creds?.me?.id;
         if (meId) {
             const bare = meId.split(':')[0].split('@')[0];
             out.add(`${bare}@s.whatsapp.net`);
         }
-        const meLid = sock?.authState?.creds?.me?.lid;
-        if (meLid) {
-            const bareLid = meLid.split(':')[0].split('@')[0];
-            out.add(`${bareLid}@lid`);
-        }
     } catch (_) {}
+
     return Array.from(out);
 };
 
