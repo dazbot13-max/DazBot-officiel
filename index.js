@@ -73,8 +73,15 @@ function initProvider(providerName) {
     const name = (providerName || '').toLowerCase();
     if (aiPool.has(name)) return aiPool.get(name);
     try {
+        // Primaire : on respecte config.aiModel (sinon le modèle choisi par
+        // l'utilisateur via config.js ou ?dazai model serait ignoré). Fallback :
+        // on passe aiModel vide → chaque provider utilise son propre défaut
+        // (gemini-2.5-flash-lite pour Gemini, llama-3.3-70b-versatile pour Groq,
+        // llama3.1-8b pour Cerebras, etc.). Un `config.aiModel` gemini-spécifique
+        // n'a aucun sens pour Groq/Cerebras qui utilisent des namespaces Llama.
+        const isPrimary = name === (config.aiProvider || '').toLowerCase();
         const svc = new AIService(
-            { ...config, aiProvider: name, aiModel: '' },
+            { ...config, aiProvider: name, aiModel: isPrimary ? (config.aiModel || '') : '' },
             { sharedHistory: aiSharedHistory },
         );
         aiPool.set(name, svc);
@@ -1278,6 +1285,12 @@ async function connectToWhatsApp() {
                             await socket.sendMessage(targetChat, { text: `❌ Usage : ${currentPrefix}dazai model <nom>\nEx: ${currentPrefix}dazai model openai/gpt-4o-mini` }, { quoted: msg });
                         } else {
                             config.aiModel = newModel;
+                            // Chaque AIService stocke une COPIE de config (via spread dans
+                            // initProvider) → modifier `config.aiModel` global ne suffit pas.
+                            // On pousse le nouveau modèle uniquement sur le primaire ; les
+                            // providers de fallback gardent leur modèle par défaut (un
+                            // `gemini-2.5-flash` n'a aucun sens envoyé à Groq).
+                            if (aiService) aiService.config.aiModel = newModel;
                             // Reset des erreurs notifiées : un changement de modèle
                             // peut débloquer la situation (ex. passer d'un modèle
                             // payant à un modèle gratuit côté OpenRouter).
@@ -1285,10 +1298,15 @@ async function connectToWhatsApp() {
                             await socket.sendMessage(targetChat, { text: `✅ Modèle IA → ${newModel}` }, { quoted: msg });
                         }
                     } else if (arg === 'reload') {
-                        if (aiService) {
-                            aiService.reloadPersonality();
-                            await socket.sendMessage(targetChat, { text: `🔄 Personnalité rechargée depuis personality.json.` }, { quoted: msg });
+                        // Recharger personality.json sur TOUS les providers du pool,
+                        // pas juste le primaire. Sinon un provider de fallback
+                        // appelé après le reload enverrait encore l'ancien prompt.
+                        let n = 0;
+                        for (const svc of aiPool.values()) {
+                            svc.reloadPersonality();
+                            n++;
                         }
+                        await socket.sendMessage(targetChat, { text: `🔄 Personnalité rechargée depuis personality.json (${n} provider${n === 1 ? '' : 's'}).` }, { quoted: msg });
                     } else if (arg === 'provider') {
                         // ?dazai provider             → affiche primaire + chaîne
                         // ?dazai provider <nom>       → bascule le primaire
