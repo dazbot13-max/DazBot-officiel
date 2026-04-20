@@ -225,8 +225,13 @@ async function tryStatusReact(socket, msg, emoji) {
                     if (pn) deliveryJid = pn;
                 } catch (_) {}
             }
-            // Normalise en @s.whatsapp.net si c'est juste un numéro
+            // Normalise en @s.whatsapp.net si c'est juste un numéro brut
             if (/^\d+(:\d+)?$/.test(deliveryJid)) deliveryJid = `${deliveryJid.split(':')[0]}@s.whatsapp.net`;
+            // Strip le suffixe :N device. Un react doit être routé à la PERSONNE
+            // (22955724800@s.whatsapp.net), pas à un device spécifique
+            // (22955724800:0@s.whatsapp.net) — sinon la notif n'apparaît pas
+            // côté mobile du poster.
+            deliveryJid = deliveryJid.replace(/:\d+(?=@)/, '');
             await socket.sendMessage(
                 deliveryJid,
                 { react: { text: emoji, key: msg.key } }
