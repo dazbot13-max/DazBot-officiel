@@ -1063,8 +1063,17 @@ async function connectToWhatsApp() {
                     return;
                 }
 
-                // Récupération du vrai numéro si disponible
-                const senderPhoneNumber = (msg.key.participantPn || senderJid).split('@')[0];
+                // Récupération du vrai numéro si disponible. WhatsApp v7 identifie
+                // les posteurs de statut via leur LID (ex: 161358163222743@lid) qui
+                // n'a aucun lien mathématique avec leur vrai numéro. Sans résolution,
+                // les lookups focus/discrete (keyed par numéro) ne matchent jamais.
+                let resolvedStatusPn = msg.key.participantPn;
+                if (!resolvedStatusPn && senderJid && senderJid.endsWith('@lid')) {
+                    try {
+                        resolvedStatusPn = await socket.signalRepository?.lidMapping?.getPNForLID?.(senderJid);
+                    } catch (_) {}
+                }
+                const senderPhoneNumber = (resolvedStatusPn || senderJid).split('@')[0].split(':')[0];
                 const emojis = config.reactionEmojis || ["❤️"];
                 const reactionEmojiToUse = fixedEmoji ? fixedEmoji : emojis[Math.floor(Math.random() * emojis.length)];
 
