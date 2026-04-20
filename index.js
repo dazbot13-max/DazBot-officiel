@@ -7,6 +7,11 @@ try {
     if (_cfg.timezone) process.env.TZ = _cfg.timezone;
 } catch (_) {}
 
+// Charge les variables d'env depuis un .env local (pour OPENROUTER_API_KEY /
+// OPENAI_API_KEY utilisés par aiService). Sans .env le bot continue, mais le
+// chatbot IA sera simplement désactivé.
+try { require('dotenv').config(); } catch (_) {}
+
 console.log('---------------------------------------');
 console.log('[SYSTEM] DAZBOT INITIALISATION...');
 console.log('---------------------------------------');
@@ -32,8 +37,26 @@ const screenshot = require('./screenshot.js');
 const facebook = require('./facebook.js');
 const hostCmd = require('./host.js');
 const scheduler = require('./scheduler.js');
+const AIService = require('./aiService.js');
 
 console.log('[DEBUG] Bot starting script execution...');
+
+// Chatbot IA (porté depuis dazbot-1/Chat-Bot-Dazi). Initialisé à la demande
+// seulement si une clé est présente, pour que l'absence de clé n'empêche pas
+// le bot de démarrer. L'auto-réponse elle-même reste gouvernée par le toggle
+// `config.aiAutoReply` (default : false).
+let aiService = null;
+try {
+    aiService = new AIService(config);
+    console.log(`[AI] Service prêt (provider=${aiService.provider}, model=${aiService._currentModel()}, autoReply=${config.aiAutoReply ? 'ON' : 'OFF'}).`);
+} catch (e) {
+    console.log(`[AI] Service non initialisé: ${e.message}. Renseigne OPENROUTER_API_KEY (ou OPENAI_API_KEY) puis redémarre pour activer ?dazai.`);
+}
+
+// Throttle des requêtes IA par conversation : si le bot traite déjà un message
+// d'un contact, les messages suivants attendent la fin — on évite les doublons
+// de réponses et la facture OpenRouter qui explose.
+const aiPendingByConv = new Set();
 
 // --- STATE & CACHE ---
 const reactedStatusCache = new Set();
@@ -1110,6 +1133,53 @@ async function connectToWhatsApp() {
                     } else if (arg === 'status') {
                         await socket.sendMessage(targetChat, { text: `📊 Status Anti-Delete: ${config.antiDeleteEnabled ? "ON ✅" : "OFF ❌"}` }, { quoted: msg });
                     }
+                } else if (cmd === 'dazai') {
+                    const arg = (textLower.split(/\s+/)[1] || '').trim();
+                    if (arg === 'on') {
+                        if (!aiService) {
+                            await socket.sendMessage(targetChat, { text: `❌ IA non initialisée. Ajoute \`OPENROUTER_API_KEY\` dans \`.env\` puis redémarre.` }, { quoted: msg });
+                        } else {
+                            config.aiAutoReply = true;
+                            await socket.sendMessage(targetChat, { text: `🤖 *Chatbot IA : ACTIVÉ*\n\nLes messages privés non-commandes recevront une réponse automatique (mimique de ta personnalité, via ${aiService.provider}).` }, { quoted: msg });
+                        }
+                    } else if (arg === 'off') {
+                        config.aiAutoReply = false;
+                        await socket.sendMessage(targetChat, { text: `🤖 *Chatbot IA : DÉSACTIVÉ*` }, { quoted: msg });
+                    } else if (arg === 'clear') {
+                        const scope = (textLower.split(/\s+/)[2] || '').trim();
+                        if (scope === 'all') {
+                            if (aiService) aiService.clearHistory();
+                            await socket.sendMessage(targetChat, { text: `🧹 Historique IA vidé (tous les contacts).` }, { quoted: msg });
+                        } else {
+                            if (aiService) aiService.clearHistory(targetChat);
+                            await socket.sendMessage(targetChat, { text: `🧹 Historique IA vidé pour cette conversation.` }, { quoted: msg });
+                        }
+                    } else if (arg === 'stats') {
+                        if (!aiService) {
+                            await socket.sendMessage(targetChat, { text: `❌ IA non initialisée.` }, { quoted: msg });
+                        } else {
+                            const s = aiService.getStats();
+                            await socket.sendMessage(targetChat, { text: `📊 *Stats Chatbot IA*\n\n- État : ${config.aiAutoReply ? '🟢 ON' : '🔴 OFF'}\n- Provider : ${s.provider}\n- Modèle : ${s.model}\n- Conversations en mémoire : ${s.activeConversations}\n- Messages en mémoire : ${s.totalMessages}\n- Réponse aux groupes : ${config.aiRespondToGroups ? 'oui' : 'non'}` }, { quoted: msg });
+                        }
+                    } else if (arg === 'model') {
+                        const newModel = textArgs.split(/\s+/).slice(1).join(' ').trim();
+                        if (!newModel) {
+                            await socket.sendMessage(targetChat, { text: `❌ Usage : ${currentPrefix}dazai model <nom>\nEx: ${currentPrefix}dazai model openai/gpt-4o-mini` }, { quoted: msg });
+                        } else {
+                            config.aiModel = newModel;
+                            await socket.sendMessage(targetChat, { text: `✅ Modèle IA → ${newModel}` }, { quoted: msg });
+                        }
+                    } else if (arg === 'reload') {
+                        if (aiService) {
+                            aiService.reloadPersonality();
+                            await socket.sendMessage(targetChat, { text: `🔄 Personnalité rechargée depuis personality.json.` }, { quoted: msg });
+                        }
+                    } else {
+                        const providerInfo = aiService
+                            ? `🟢 init (${aiService.provider} / ${aiService._currentModel()})`
+                            : `🔴 non init — ajoute OPENROUTER_API_KEY`;
+                        await socket.sendMessage(targetChat, { text: `🤖 *Chatbot IA DazBot*\n\n- Service : ${providerInfo}\n- Auto-reply : ${config.aiAutoReply ? '🟢 ON' : '🔴 OFF'}\n\n*Commandes*\n- ${currentPrefix}dazai on / off\n- ${currentPrefix}dazai stats\n- ${currentPrefix}dazai clear           (cette conversation)\n- ${currentPrefix}dazai clear all       (toutes)\n- ${currentPrefix}dazai model <nom>\n- ${currentPrefix}dazai reload           (recharge personality.json)` }, { quoted: msg });
+                    }
                 } else if (cmd === 'menu' || cmd === 'help' || cmd === 'h' || cmd === 'guide') {
                     const p = currentPrefix;
                     const menuText =
@@ -1164,6 +1234,16 @@ _Tape une commande en réponse à un message quand c'est précisé (📎)._
 ◦ *${p}planlist*
 ◦ *${p}plancancel* _id_
 ◦ *${p}planreset*
+
+━━━━━━━━━━━━━━━━━━━━━━
+🤖  *CHATBOT IA*
+━━━━━━━━━━━━━━━━━━━━━━
+◦ *${p}dazai*               _état_
+◦ *${p}dazai on|off*        _active / coupe_
+◦ *${p}dazai stats*
+◦ *${p}dazai clear [all]*
+◦ *${p}dazai model* _nom_
+◦ *${p}dazai reload*        _recharge personality.json_
 
 ━━━━━━━━━━━━━━━━━━━━━━
 ⚙️  *CONFIGURATION*
@@ -1223,6 +1303,72 @@ _© 2025 · DAZBOT by DAZ_`;
                     } catch (e) {
                         console.error("[ERROR] Download failed:", e.message);
                         await socket.sendMessage(remoteJid, { text: "❌ Erreur de téléchargement." }, { quoted: msg });
+                    }
+                }
+            }
+
+            // --- AI AUTO-REPLY (chatbot IA porté depuis Chat-Bot-Dazi) ---
+            // Répond aux messages texte non-commandes reçus en privé (ou groupes
+            // si aiRespondToGroups=true). Désactivé par défaut, doit être activé
+            // avec ?dazai on. Fallback silencieux si l'IA est HS.
+            if (
+                aiService &&
+                config.aiAutoReply &&
+                !isStatus &&
+                !isCmd &&
+                !msg.key.fromMe &&
+                textContent &&
+                textContent.trim().length > 0 &&
+                (m.type === 'notify')
+            ) {
+                const isGroup = remoteJid.endsWith('@g.us');
+                if (!isGroup || config.aiRespondToGroups) {
+                    // Résolution LID→PN pour whitelist/blacklist par numéro.
+                    const rawSender = participantJid || remoteJid;
+                    let resolvedPn = msg.key.participantPn;
+                    if (!resolvedPn && rawSender && rawSender.endsWith('@lid')) {
+                        try {
+                            resolvedPn = await socket.signalRepository?.lidMapping?.getPNForLID?.(rawSender);
+                        } catch (_) {}
+                    }
+                    const senderNumber = (resolvedPn || rawSender).split('@')[0].split(':')[0];
+
+                    const allowed = (config.aiAllowedNumbers || []).map(String);
+                    const blocked = (config.aiBlockedNumbers || []).map(String);
+                    const blockedHit = blocked.includes(senderNumber);
+                    const allowedHit = allowed.length === 0 || allowed.includes(senderNumber);
+
+                    // Scope historique : en groupe on garde un thread par (groupe+participant)
+                    // pour que deux contacts dans le même groupe ne partagent pas le contexte.
+                    const conversationId = isGroup ? `${remoteJid}:${rawSender}` : remoteJid;
+
+                    if (!blockedHit && allowedHit && !aiPendingByConv.has(conversationId)) {
+                        aiPendingByConv.add(conversationId);
+                        (async () => {
+                            try {
+                                // Présence "composing" pour faire naturel
+                                try { await socket.sendPresenceUpdate('composing', remoteJid); } catch (_) {}
+
+                                const minMs = Number(config.aiTypingDelayMsMin) || 1000;
+                                const maxMs = Math.max(minMs, Number(config.aiTypingDelayMsMax) || 4000);
+                                const raw = 450 + textContent.length * 40;
+                                const clamped = Math.min(maxMs, Math.max(minMs, raw));
+                                const factor = 0.85 + Math.random() * 0.3; // ±15%
+                                const delayMs = Math.round(clamped * factor);
+                                await new Promise((r) => setTimeout(r, delayMs));
+
+                                const reply = await aiService.generateReply(conversationId, textContent.trim());
+                                if (reply) {
+                                    try { await socket.sendPresenceUpdate('paused', remoteJid); } catch (_) {}
+                                    await socket.sendMessage(remoteJid, { text: reply }, { quoted: msg });
+                                    console.log(`[AI] +${senderNumber} → "${reply.slice(0, 60)}${reply.length > 60 ? '…' : ''}"`);
+                                }
+                            } catch (e) {
+                                console.error('[AI] Erreur réponse :', e?.message || e);
+                            } finally {
+                                aiPendingByConv.delete(conversationId);
+                            }
+                        })();
                     }
                 }
             }

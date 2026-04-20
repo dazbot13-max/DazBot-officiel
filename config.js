@@ -66,5 +66,23 @@ module.exports = {
     timezone: "Africa/Porto-Novo",
 
     // Global settings
-    sendWelcomeMessage: true // Whether to send a message to yourself when the bot connects
+    sendWelcomeMessage: true, // Whether to send a message to yourself when the bot connects
+
+    // ---------------------------------------------------------------
+    // Chatbot IA (porté depuis dazbot-1/Chat-Bot-Dazi)
+    // ---------------------------------------------------------------
+    // Répond automatiquement aux messages privés texte via OpenRouter
+    // (ou OpenAI) en imitant la personnalité définie dans personality.json.
+    // Désactivé par défaut : active avec `?dazai on`.
+    aiAutoReply: false,
+    aiProvider: "openrouter",           // "openrouter" ou "openai"
+    aiModel: "openai/gpt-4o-mini",      // modèle exact côté provider
+    aiMaxContextMessages: 10,           // mémoire courte par contact
+    aiRespondToGroups: false,           // true = répond aussi dans les groupes
+    aiTypingDelayMsMin: 1000,           // délai min "typing" avant réponse
+    aiTypingDelayMsMax: 4000,           // délai max (clampé, ~40ms/char)
+    // Si non vide, le bot ne répond IA qu'à ces numéros (sans '+', ex "22955724800")
+    aiAllowedNumbers: [],
+    // Numéros à IGNORER même si autoReply est ON.
+    aiBlockedNumbers: []
 };
