@@ -45,11 +45,11 @@ module.exports = {
     // Laisse vide pour désactiver l'image (le bot enverra juste le texte).
     bootBannerUrl: "https://i.postimg.cc/rFR6bHgL/17762702118f23.png",
 
-    // Citations affichées aléatoirement dans le message de connexion.
+    // Citations affichées dans le message de connexion (toutes affichées).
     // Ajoute / supprime / modifie librement.
     bootQuotes: [
-        "st4y F0cuS, St4y D3t37MIN473",
-        "et tout ça, c'est le destin"
+        "Et tout ça 🤒, c'est le destin 🫠🤲🧎",
+        "St4y F0cuS, St4Y D3termi4t3 🫠🤲🧎"
     ],
     
     // Supabase credentials for remote auth state storage 

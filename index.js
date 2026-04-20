@@ -470,15 +470,16 @@ async function connectToWhatsApp() {
                 || socket.user.verifiedName
                 || 'Propriétaire';
             const quotes = Array.isArray(config.bootQuotes) ? config.bootQuotes.filter(q => q && q.trim()) : [];
-            const pickedQuote = quotes.length ? quotes[Math.floor(Math.random() * quotes.length)] : '';
+            const quotesBlock = quotes.length
+                ? '\n' + quotes.map(q => `_${q}_`).join('\n')
+                : '';
             const welcomeCaption =
-                `╭───〔 🤖 *DAZBOT connecté ✅* 〕───⬣\n` +
+                `╭───〔 🤖 *DAZBOT connecté ✅* 〕───⬣${quotesBlock}\n` +
                 `│ ߷ *Propriétaire*      ➜ ${ownerName}\n` +
                 `│ ߷ *Numéro*            ➜ +${ownerNumber}\n` +
                 `│ ߷ *Personne connectée* ➜ +${actualConnectedNumber}\n` +
                 `│ ߷ *Mode*              ➜ Auto-Like\n` +
-                `╰──────────────⬣` +
-                (pickedQuote ? `\n\n💬 _${pickedQuote}_` : '');
+                `╰──────────────⬣`;
             console.log(welcomeCaption);
             try {
                 if (config.sendWelcomeMessage) {
