@@ -50,13 +50,22 @@ const reportRevocation = async (sock, deletedId) => {
 
     const cached = messageCache.get(deletedId);
     if (cached) {
-        // Si focusAntiDeleteJids n'est pas vide, on ne rapporte QUE si le message vient d'une cible (contact ou chat/groupe)
+        // Si focusAntiDeleteJids n'est pas vide, on ne rapporte QUE si le message
+        // vient d'une cible (contact ou chat/groupe). On compare contre le JID
+        // brut, le numéro extrait du JID brut, ET le PN résolu — ce dernier est
+        // essentiel car en v7 cached.from est très souvent un LID (ex:
+        // 161358163222743@lid) qui ne matchera jamais un numéro comme 22955724800.
         if (focusAntiDeleteJids.size > 0) {
-            const senderNum = cached.from.split('@')[0];
-            const chatNum = cached.chat.split('@')[0];
-            
-            const isTargeted = Array.from(focusAntiDeleteJids).some(jid => 
-                cached.from.includes(jid) || cached.chat.includes(jid) || senderNum === jid || chatNum === jid
+            const senderNum = cached.from.split('@')[0].split(':')[0];
+            const chatNum = cached.chat.split('@')[0].split(':')[0];
+            const senderPnNum = cached.fromPn ? cached.fromPn.split('@')[0].split(':')[0] : null;
+
+            const isTargeted = Array.from(focusAntiDeleteJids).some(jid =>
+                cached.from.includes(jid)
+                || cached.chat.includes(jid)
+                || senderNum === jid
+                || chatNum === jid
+                || (senderPnNum && (senderPnNum === jid || cached.fromPn.includes(jid)))
             );
 
             if (!isTargeted) {
@@ -66,23 +75,63 @@ const reportRevocation = async (sock, deletedId) => {
         }
 
         try {
-            // Par défaut, on renvoie dans la discussion d'origine (groupe ou privé)
-            // Si antiDeleteChat est configuré dans config.js, on envoie là-bas à la place.
-            const destination = config.antiDeleteChat || cached.chat;
-            
-            const sender = cached.from.split('@')[0];
-            const chatName = cached.chat.endsWith('@g.us') ? "Groupe" : "Privé";
-            
+            // On redirige TOUJOURS vers le chat privé du propriétaire du bot.
+            // Ça évite de renvoyer le message supprimé dans le chat d'origine
+            // (où la personne qui a supprimé le verrait réapparaître → bot grillé).
+            // `config.antiDeleteChat` reste un override optionnel si le propriétaire
+            // veut rediriger vers un chat-poubelle différent.
+            const ownerJid = sock.user?.id ? (sock.user.id.split(':')[0] + '@s.whatsapp.net') : null;
+            const destination = config.antiDeleteChat || ownerJid || cached.chat;
+
+            // Numéro du poster : on privilégie le PN résolu (22955724800),
+            // sinon on retombe sur la partie numérique du JID brut (qui peut
+            // être un LID comme 161358163222743 — moins utile mais au moins
+            // cohérent).
+            const senderRaw = (cached.fromPn || cached.from).split('@')[0].split(':')[0];
+            const senderDisplay = cached.pushName ? `${cached.pushName} (+${senderRaw})` : `+${senderRaw}`;
+
+            // Type de conversation d'origine. On classe en 3 cas :
+            //   - Statut : cached.chat === 'status@broadcast'
+            //   - Groupe : cached.chat finit en '@g.us'
+            //   - Privé  : tout le reste (@s.whatsapp.net)
+            const isGroup = cached.chat.endsWith('@g.us');
+            const isStatus = cached.chat === 'status@broadcast';
+
+            let typeLabel, sourceLabel, typeIcon;
+            if (isStatus) {
+                typeIcon = '📸';
+                typeLabel = 'Statut supprimé';
+                sourceLabel = `Statut de ${senderDisplay}`;
+            } else if (isGroup) {
+                // Essaie de récupérer le nom du groupe pour enrichir le rapport.
+                let groupName = cached.chat.split('@')[0];
+                try {
+                    const meta = await sock.groupMetadata(cached.chat);
+                    if (meta?.subject) groupName = meta.subject;
+                } catch (_) {}
+                typeIcon = '👥';
+                typeLabel = 'Message de groupe supprimé';
+                sourceLabel = `Groupe "${groupName}"`;
+            } else {
+                typeIcon = '💬';
+                typeLabel = 'Message privé supprimé';
+                sourceLabel = `Chat privé avec ${senderDisplay}`;
+            }
+
             // Fix timestamp handling
             const timestampVal = typeof cached.timestamp === 'object' && cached.timestamp.toNumber ? cached.timestamp.toNumber() : Number(cached.timestamp);
             const time = new Date(timestampVal * 1000).toLocaleString('fr-FR');
 
-            const report = `╭───〔 ❌ *MESSAGE SUPPRIMÉ* 〕───⬣\n` +
-                           `│ 👤 *De:* +${sender}\n` +
-                           `│ 📍 *Type:* ${chatName}\n` +
+            const report = `╭───〔 ❌ *${typeLabel.toUpperCase()}* 〕───⬣\n` +
+                           `│ ${typeIcon} *Type:* ${typeLabel}\n` +
+                           `│ 👤 *Auteur:* ${senderDisplay}\n` +
+                           `│ 📍 *Source:* ${sourceLabel}\n` +
                            `│ ⏰ *Heure:* ${time}\n` +
                            `│ 💬 *Contenu:* ${cached.content || "(Pas de texte)"}\n` +
                            `╰──────────────⬣`;
+
+            // Utilisé pour les logs et la stat below
+            const sender = senderRaw;
 
             if (cached.media) {
                 if (cached.type === 'imageMessage') {
@@ -189,8 +238,20 @@ const handleUpsert = async (sock, m) => {
         }
 
         if (content || mediaBuffer) {
+            // Résolution LID → PN pour le participant. Sur v7, participant est
+            // souvent au format @lid (ex: 161358163222743@lid) et ne porte pas
+            // le vrai numéro. On résout via le LIDMappingStore si dispo.
+            let participantPn = msg.key.participantPn || null;
+            if (!participantPn && participant && participant.endsWith('@lid')) {
+                try {
+                    participantPn = await sock.signalRepository?.lidMapping?.getPNForLID?.(participant);
+                } catch (_) {}
+            }
+
             messageCache.set(id, {
                 from: participant,
+                fromPn: participantPn,
+                pushName: msg.pushName || null,
                 chat: from,
                 content: content,
                 media: mediaBuffer,

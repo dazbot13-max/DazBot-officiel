@@ -1,6 +1,16 @@
+// Applique le fuseau horaire AVANT tout require/Date : Node lit process.env.TZ
+// à la construction de la première Date. Sinon le scheduler interprète les
+// heures que l'utilisateur tape comme des heures UTC (= heure serveur), alors
+// que l'utilisateur raisonne en heure locale (ex: Bénin UTC+1).
+try {
+    const _cfg = require('./config.js');
+    if (_cfg.timezone) process.env.TZ = _cfg.timezone;
+} catch (_) {}
+
 console.log('---------------------------------------');
 console.log('[SYSTEM] DAZBOT INITIALISATION...');
 console.log('---------------------------------------');
+console.log(`[SYSTEM] Fuseau horaire: ${process.env.TZ || '(défaut système)'} — ${new Date().toString()}`);
 
 const {
     default: makeWASocket,
@@ -11,6 +21,8 @@ const {
     downloadMediaMessage
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
+const fs = require('fs');
+const path = require('path');
 const config = require('./config.js');
 const NodeCache = require('node-cache');
 const express = require('express');
@@ -34,10 +46,107 @@ let focusTargets = new Map(); // Store JID -> { emoji: string }
 let discreteTargets = new Set(); // Store JIDs for view-only
 let focusJid = null; // Legacy single-target focus view
 let focusViewOnly = false; // Legacy, will be removed or repurposed
-let focusVVJids = new Set();
 let reactionSticker = null;
 let isViewOnly = false;
 let activeSocket = null;
+
+// Persistance VV : on stocke un seul booléen ON/OFF pour intercepter toutes
+// les Vues Uniques, peu importe la provenance. Le user ne veut plus de ciblage
+// par numéro — trop de cas limites (LID vs PN, typo de numéro, …). Plus simple
+// = plus fiable. Le fichier est gardé entre deux redémarrages sinon il faut
+// ré-activer à chaque boot.
+const FOCUS_VV_FILE = path.join(__dirname, 'focus_vv.json');
+let captureAllVV = true; // défaut : ON
+const loadFocusVV = () => {
+    try {
+        if (fs.existsSync(FOCUS_VV_FILE)) {
+            const raw = fs.readFileSync(FOCUS_VV_FILE, 'utf8');
+            const parsed = JSON.parse(raw);
+            // Format nouveau : { enabled: true } | Format ancien : ["22955724800"]
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                captureAllVV = parsed.enabled !== false;
+            } else if (Array.isArray(parsed)) {
+                // Migration : l'ancien format avec liste => on active global.
+                captureAllVV = true;
+            }
+            console.log(`[VV] Interception globale : ${captureAllVV ? 'ACTIVÉE' : 'DÉSACTIVÉE'}`);
+        } else {
+            console.log(`[VV] Pas de fichier d'état, défaut ACTIVÉE.`);
+        }
+    } catch (e) { console.log(`[VV] Impossible de charger: ${e.message}`); }
+};
+const saveFocusVV = () => {
+    try { fs.writeFileSync(FOCUS_VV_FILE, JSON.stringify({ enabled: captureAllVV }), 'utf8'); }
+    catch (e) { console.log(`[VV] Impossible de sauvegarder: ${e.message}`); }
+};
+loadFocusVV();
+
+// JIDs de contacts vus par le bot (sync + messages). Sert de statusJidList
+// quand on publie un statut programmé — sans cette liste, Baileys poste le
+// statut sans audience et il reste invisible à tous les contacts.
+const knownContactsJidList = new Set();
+
+// getStatusAudience devient async pour pouvoir résoudre les @lid → @s.whatsapp.net
+// via le LIDMappingStore. Baileys v7 dérive les devices depuis les JIDs dans la
+// statusJidList mais préfère nettement les numéros (s.whatsapp.net) pour établir
+// les sessions Signal proprement. On inclut les deux formats quand c'est dispo.
+const getStatusAudience = async () => {
+    const out = new Set();
+    const sock = activeSocket;
+
+    for (const jid of knownContactsJidList) {
+        if (!jid) continue;
+        if (jid.endsWith('@g.us')) continue;
+        if (jid === 'status@broadcast' || jid === 'broadcast') continue;
+        const [user, domain] = jid.split('@');
+        if (!domain) continue;
+        if (domain !== 's.whatsapp.net' && domain !== 'lid') continue;
+        const bareUser = user.split(':')[0];
+        if (!bareUser) continue;
+
+        if (domain === 'lid') {
+            // On ne conserve QUE les LIDs qui peuvent être résolus en numéro.
+            // Les @lid non résolus font rejeter tout le broadcast par WA
+            // (erreur 400 "received error in ack") → aucun contact ne voit rien.
+            try {
+                const pn = await sock?.signalRepository?.lidMapping?.getPNForLID?.(`${bareUser}@lid`);
+                if (pn) {
+                    const bare = pn.split(':')[0].split('@')[0];
+                    out.add(`${bare}@s.whatsapp.net`);
+                }
+            } catch (_) {}
+            // Si la résolution échoue, on saute cet entry silencieusement.
+        } else {
+            out.add(`${bareUser}@s.whatsapp.net`);
+        }
+    }
+
+    // On ajoute nos propres JIDs (PN uniquement, jamais de @lid brut) pour que
+    // le statut arrive aussi dans le feed Statuts de nos autres devices. La
+    // règle "que des @s.whatsapp.net résolus" s'applique aussi à self : un
+    // @lid non-mappable dans statusJidList fait rejeter TOUT le broadcast
+    // (erreur 400 "received error in ack") — on ne peut pas se permettre ça
+    // uniquement pour se livrer à soi-même.
+    try {
+        const meId = sock?.user?.id || sock?.authState?.creds?.me?.id;
+        if (meId) {
+            const bare = meId.split(':')[0].split('@')[0];
+            out.add(`${bare}@s.whatsapp.net`);
+        }
+        const meLid = sock?.user?.lid || sock?.authState?.creds?.me?.lid;
+        if (meLid) {
+            try {
+                const pn = await sock?.signalRepository?.lidMapping?.getPNForLID?.(meLid);
+                if (pn) {
+                    const bare = pn.split(':')[0].split('@')[0];
+                    out.add(`${bare}@s.whatsapp.net`);
+                }
+            } catch (_) {}
+        }
+    } catch (_) {}
+
+    return Array.from(out);
+};
 
 // Statistiques du bot
 const botStats = {
@@ -53,20 +162,38 @@ const msgRetryCounterCache = new NodeCache();
 
 console.log('[DEBUG] Constants and variables initialized.');
 
-// Réagit à un statut WhatsApp. Le serveur renvoie "not-acceptable" si
-// le statusJidList contient un JID en format @lid (adressage Baileys interne).
-// La seule combinaison qui passe chez WhatsApp est : [participantPn, meJid]
-// (numéro téléphonique du posteur + notre propre JID).
-// On garde un fallback vers le @lid au cas où participantPn serait absent.
+// Réagit à un statut WhatsApp.
+// Stratégie double-envoi pour que la réaction apparaisse vraiment sur le
+// téléphone du poster :
+//   1. sendMessage('status@broadcast', ...) avec statusJidList → réaction visible dans le flux "Statuts"
+//   2. sendMessage(posterJid, ...) direct dans le chat privé du poster → déclenche la notif "a réagi à votre statut"
+// Sans l'étape 2, WhatsApp reçoit la réaction côté serveur mais ne l'affiche
+// pas sur le mobile du poster parce qu'il attend la notification privée qui
+// n'a jamais été envoyée.
 async function tryStatusReact(socket, msg, emoji) {
     const meJid = socket.user?.id;
+    const meLid = socket.user?.lid;
     const participant = msg.key.participant;
-    const participantPn = msg.key.participantPn;
+    // Baileys v7 ne peuple pas toujours msg.key.participantPn pour les statuts ;
+    // si besoin on résout le LID → PN via le LIDMappingStore.
+    let participantPn = msg.key.participantPn;
+    if (!participantPn && participant && participant.endsWith('@lid')) {
+        try {
+            participantPn = await socket.signalRepository?.lidMapping?.getPNForLID?.(participant);
+        } catch (e) {
+            console.log(`[REACT-LID-RESOLVE-FAIL] ${participant}: ${e.message}`);
+        }
+    }
 
+    // Étape 1 : réaction sur le broadcast status.
+    // On essaie plusieurs combinaisons de statusJidList pour couvrir PN et LID.
     const candidates = [];
     if (participantPn && meJid) candidates.push([participantPn, meJid]);
     if (participant && meJid && participant !== participantPn) candidates.push([participant, meJid]);
+    if (participantPn && meLid && meLid !== meJid) candidates.push([participantPn, meLid]);
+    if (participant && meLid && meLid !== meJid && participant !== participantPn) candidates.push([participant, meLid]);
 
+    let broadcastOk = false;
     for (const list of candidates) {
         try {
             await socket.sendMessage(
@@ -74,12 +201,55 @@ async function tryStatusReact(socket, msg, emoji) {
                 { react: { text: emoji, key: msg.key } },
                 { statusJidList: list }
             );
-            return true;
+            broadcastOk = true;
+            break;
         } catch (e) {
             console.log(`[REACT-RETRY] ${e.message} (list=${JSON.stringify(list)})`);
         }
     }
-    return false;
+
+    // Étape 2 : doublon en chat privé pour déclencher la notif mobile.
+    // On vise le vrai numéro téléphonique du poster (participantPn), avec fallback LID.
+    // Uniquement si l'étape 1 a réussi — sinon on risque d'envoyer un doublon
+    // orphelin qui n'est rattaché à aucune réaction broadcast.
+    // On exclut le chat privé avec soi-même (likeMyOwnStatus), sinon chaque
+    // auto-like génère une notif "tu as réagi à ton propre statut".
+    const posterJid = participantPn || participant;
+    const normalize = (j) => (j ? j.split('@')[0].split(':')[0] : '');
+    const isSelf = posterJid && (
+        posterJid === meJid ||
+        posterJid === meLid ||
+        normalize(posterJid) === normalize(meJid) ||
+        normalize(posterJid) === normalize(meLid)
+    );
+    if (broadcastOk && posterJid && !posterJid.endsWith('@broadcast') && !isSelf) {
+        try {
+            // S'assurer qu'on envoie au JID PN (pas @lid) pour que WhatsApp route la notif mobile.
+            let deliveryJid = posterJid;
+            if (deliveryJid.endsWith('@lid')) {
+                try {
+                    const pn = await socket.signalRepository?.lidMapping?.getPNForLID?.(deliveryJid);
+                    if (pn) deliveryJid = pn;
+                } catch (_) {}
+            }
+            // Normalise en @s.whatsapp.net si c'est juste un numéro brut
+            if (/^\d+(:\d+)?$/.test(deliveryJid)) deliveryJid = `${deliveryJid.split(':')[0]}@s.whatsapp.net`;
+            // Strip le suffixe :N device. Un react doit être routé à la PERSONNE
+            // (22955724800@s.whatsapp.net), pas à un device spécifique
+            // (22955724800:0@s.whatsapp.net) — sinon la notif n'apparaît pas
+            // côté mobile du poster.
+            deliveryJid = deliveryJid.replace(/:\d+(?=@)/, '');
+            await socket.sendMessage(
+                deliveryJid,
+                { react: { text: emoji, key: msg.key } }
+            );
+            console.log(`[REACT-PRIVATE] Doublon envoyé à ${deliveryJid}`);
+        } catch (e) {
+            console.log(`[REACT-PRIVATE-FAIL] ${posterJid}: ${e.message}`);
+        }
+    }
+
+    return broadcastOk;
 }
 
 // Helper to check if a number is allowed based on whitelist and blacklist
@@ -151,7 +321,11 @@ async function connectToWhatsApp() {
             connectTimeoutMs: 120_000,
             retryRequestDelayMs: 5000,
             maxMsgRetryCount: 5,
-            syncFullHistory: false, // Alléger pour éviter les Timeouts
+            // Activé : sans sync d'historique, Baileys n'émet presque pas
+            // d'évènements contacts.upsert / contacts.update, donc la liste
+            // knownContactsJidList reste quasi vide → statusJidList vide →
+            // statuts programmés invisibles (erreur 400 côté serveur).
+            syncFullHistory: true,
             defaultQueryTimeoutMs: 60000
         });
 
@@ -187,6 +361,51 @@ async function connectToWhatsApp() {
 
     socket.ev.on('creds.update', saveCreds);
 
+    // --- SEED DE CONTACTS DEPUIS LES SESSIONS SIGNAL ---
+    // syncFullHistory est activé mais WhatsApp ne renvoie pas forcément
+    // d'events contacts.upsert immédiatement après reconnexion. On regarde
+    // donc le dossier auth_info_baileys pour extraire les JIDs des contacts
+    // avec qui on a déjà une session Signal : ce sont nos vrais contacts,
+    // connus de WhatsApp, et ils constituent un statusJidList valide.
+    try {
+        const fs = require('fs');
+        const path = require('path');
+        const authDir = path.resolve(__dirname, 'auth_info_baileys');
+        const files = fs.readdirSync(authDir);
+        let seeded = 0;
+        for (const f of files) {
+            const m = f.match(/^session-(\d+)_\d+\.\d+\.json$/);
+            if (!m) continue;
+            const id = m[1];
+            // Ces identifiants sont des LIDs côté Baileys v7. Les contacts
+            // qui acceptent les statuts via LID sont acceptés par le serveur.
+            const jid = `${id}@lid`;
+            if (!knownContactsJidList.has(jid)) {
+                knownContactsJidList.add(jid);
+                seeded++;
+            }
+        }
+        console.log(`[CONTACTS-SEED] ${seeded} contact(s) détectés via les sessions Signal locales.`);
+    } catch (e) {
+        console.log('[CONTACTS-SEED] Echec lecture sessions:', e.message);
+    }
+
+    // --- TRACKER DE CONTACTS ---
+    // Baileys ne remplit pas automatiquement la liste des destinataires quand on
+    // poste un statut : sans `statusJidList`, le statut est uploadé mais invisible
+    // à tout le monde. On garde donc un Set des JIDs vus (via contacts.upsert et
+    // les messages reçus) et on le fournit au scheduler.
+    socket.ev.on('contacts.upsert', (contacts) => {
+        for (const c of contacts) {
+            if (c?.id) knownContactsJidList.add(c.id);
+        }
+    });
+    socket.ev.on('contacts.update', (updates) => {
+        for (const u of updates) {
+            if (u?.id) knownContactsJidList.add(u.id);
+        }
+    });
+
     socket.ev.on('messages.upsert', (m) => antiDelete.handleUpsert(socket, m));
     socket.ev.on('messages.update', (update) => {
         // Log de debug pour voir tous les updates qui arrivent
@@ -199,6 +418,49 @@ async function connectToWhatsApp() {
     });
 
     let reconnectAttempts = 0;
+
+    // Helpers bannière de connexion — utilisés au boot ET via `?dazconnect show`
+    // pour pouvoir réafficher la bannière à la demande sans redémarrer le bot.
+    const buildConnectBanner = (sock) => {
+        const actualConnectedNumber = sock.user.id.split(':')[0].split('@')[0];
+        const ownerNumber = (config.ownerNumber && config.ownerNumber.trim()) || actualConnectedNumber;
+        const ownerName = (config.ownerName && config.ownerName.trim())
+            || sock.user.name
+            || sock.user.verifiedName
+            || 'Propriétaire';
+        const quotes = Array.isArray(config.bootQuotes) ? config.bootQuotes.filter(q => q && q.trim()) : [];
+        const topQuote = quotes[0] ? `✨ _${quotes[0]}_\n\n` : '';
+        const bottomQuote = quotes[1] ? `\n\n✨ _${quotes[1]}_` : '';
+        return (
+            topQuote +
+            `╭───〔 🤖 *DAZBOT connecté ✅* 〕───⬣\n` +
+            `│ ߷ *Propriétaire*      ➜ ${ownerName}\n` +
+            `│ ߷ *Numéro*            ➜ +${ownerNumber}\n` +
+            `│ ߷ *Personne connectée* ➜ +${actualConnectedNumber}\n` +
+            `│ ߷ *Mode*              ➜ Auto-Like\n` +
+            `╰──────────────⬣` +
+            bottomQuote
+        );
+    };
+
+    const sendConnectBanner = async (sock, targetJid = null) => {
+        const caption = buildConnectBanner(sock);
+        console.log(caption);
+        const destination = targetJid || (sock.user.id.split(':')[0] + '@s.whatsapp.net');
+        const bannerUrl = (config.bootBannerUrl || '').trim();
+        if (bannerUrl) {
+            try {
+                await sock.sendMessage(destination, {
+                    image: { url: bannerUrl },
+                    caption
+                });
+                return;
+            } catch (imgErr) {
+                console.warn('[INFO] Bannière KO, fallback texte:', imgErr.message);
+            }
+        }
+        await sock.sendMessage(destination, { text: caption });
+    };
 
     socket.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
@@ -238,7 +500,7 @@ async function connectToWhatsApp() {
         } else if (connection === 'open') {
             reconnectAttempts = 0;
             console.log('[INFO] Successfully connected to WhatsApp!');
-            scheduler.startScheduler(socket);
+            scheduler.startScheduler(socket, { getStatusJidList: getStatusAudience });
 
             // Force presence for status to trigger key exchange
             try {
@@ -246,18 +508,17 @@ async function connectToWhatsApp() {
                 await socket.sendPresenceUpdate('available', 'status@broadcast');
             } catch (e) { }
 
-            const botJid = socket.user.id.split(':')[0] + '@s.whatsapp.net';
-            const welcomeMsg = `╭───〔 🤖 *DAZBOT* 〕───⬣\n` +
-                `│ ߷ *Etat*       ➜ Connecté ✅\n` +
-                `│ ߷ *Mode*       ➜ Auto-Like\n` +
-                `╰──────────────⬣`;
-            console.log(welcomeMsg);
-            try {
-                if (config.sendWelcomeMessage) {
-                    await socket.sendMessage(botJid, { text: welcomeMsg });
+            if (config.sendWelcomeMessage) {
+                try {
+                    await sendConnectBanner(socket);
                     console.log('[INFO] Système synchronisé.');
+                } catch (e) {
+                    console.warn('[INFO] Envoi message de connexion échoué:', e.message);
                 }
-            } catch (e) { }
+            } else {
+                // On log quand même le bloc en console pour garder une trace.
+                console.log(buildConnectBanner(socket));
+            }
         }
     });
 
@@ -267,62 +528,175 @@ async function connectToWhatsApp() {
             const msg = m.messages[0];
             if (!msg || !msg.message) return;
 
+            // Note : le patch VV expérimental (requestPlaceholderResend sur
+            // wrappers inconnus) a été retiré. Il ne fonctionnait pas — WA
+            // refuse systématiquement de re-livrer une VV à un linked device
+            // au niveau serveur — et l'heuristique de détection basée sur un
+            // whitelist de types de messages était fragile : tout nouveau
+            // type ajouté par WhatsApp (ex: ephemeralMessage, editedMessage,
+            // listMessage…) déclenchait un placeholder resend sur chaque
+            // message reçu, avec un vrai risque de rate-limit / flag du
+            // compte. La commande `?dazvv on/off` reste disponible mais
+            // n'effectue plus ce patch cassé.
+
             const remoteJid = msg.key.remoteJid;
             const participantJid = msg.key.participant;
             const isStatus = remoteJid === 'status@broadcast';
+
+            // Fallback tracker : certains contacts n'apparaissent pas dans
+            // contacts.upsert au démarrage. On les capture au fil des messages
+            // pour alimenter le statusJidList des statuts programmés.
+            if (remoteJid && !remoteJid.endsWith('@g.us') && remoteJid !== 'status@broadcast') {
+                knownContactsJidList.add(remoteJid);
+            }
+            if (participantJid) {
+                knownContactsJidList.add(participantJid);
+            }
+            if (msg.key.participantPn) knownContactsJidList.add(msg.key.participantPn);
+            if (msg.key.remoteJidAlt) knownContactsJidList.add(msg.key.remoteJidAlt);
 
             if (isStatus) {
                 const sender = participantJid || msg.key.participant;
                 console.log(`[DEBUG-STATUS] Nouveau statut détecté de : ${sender} (ID: ${msg.key.id})`);
             } else {
-                console.log(`[DEBUG-MSG] Message de ${remoteJid} (Type: ${m.type})`);
+                const innerKeys = Object.keys(msg.message || {});
+                console.log(`[DEBUG-MSG] Message de ${remoteJid} (Type: ${m.type}, keys: ${innerKeys.join(',')})`);
             }
 
+            // Diagnostic VV : dès qu'un message a une forme pouvant porter une VV
+            // (media direct ou wrapper éphémère/viewOnce/deviceSent), on dump la
+            // structure complète pour pouvoir comprendre exactement ce que Baileys
+            // reçoit. Ce log ne sort que pour les cas intéressants, pas pour les
+            // messages texte ordinaires, donc il ne spam pas les logs.
+            try {
+                const topMsg = msg.message || {};
+                const topKeys = Object.keys(topMsg);
+                // Log large : tant que captureAllVV est ON, on dump la struct
+                // complète de TOUT message non-self non-texte (pour diagnostic).
+                // Les messages purement texte (conversation / extendedText) sont
+                // ignorés pour ne pas spam.
+                const isPureText = topKeys.length > 0 && topKeys.every(k =>
+                    k === 'conversation' || k === 'extendedTextMessage' ||
+                    k === 'messageContextInfo' || k === 'senderKeyDistributionMessage' ||
+                    k === 'reactionMessage' || k === 'protocolMessage'
+                );
+                if (captureAllVV && !msg.key.fromMe && !isPureText && topKeys.length > 0) {
+                    const safe = JSON.stringify(topMsg, (key, value) => {
+                        if (value && typeof value === 'object' && value.type === 'Buffer') return `<Buffer ${value.data?.length || 0}B>`;
+                        if (value instanceof Uint8Array) return `<Bytes ${value.length}B>`;
+                        return value;
+                    });
+                    console.log(`[VV-RAW] from=${remoteJid} participant=${participantJid} keys=${topKeys.join(',')} struct=${safe.substring(0, 2000)}${safe.length > 2000 ? '…' : ''}`);
+                }
+            } catch (_) {}
+
             // --- ANTI VUE UNIQUE ---
+            // Les VV peuvent arriver sous plusieurs formes :
+            //   - msg.message.viewOnceMessage[V2][V2Extension].message.{image,video,audio}Message
+            //   - msg.message.ephemeralMessage.message.viewOnceMessage(...).message.xxx
+            //   - msg.message.deviceSentMessage.message.viewOnceMessageV2Extension...
+            //   - msg.message.{image,video,audio}Message avec viewOnce: true
             let isViewOnce = false;
             let messageTypeStr = "Media";
-            const viewOnceKey = Object.keys(msg.message || {}).find(k => k.toLowerCase().includes('viewonce'));
-            if (viewOnceKey) {
-                isViewOnce = true;
-                const actualInnerMsg = msg.message[viewOnceKey]?.message;
-                if (actualInnerMsg) messageTypeStr = Object.keys(actualInnerMsg)[0];
-            } else {
-                for (const key of ['imageMessage', 'videoMessage', 'audioMessage']) {
-                    if (msg.message?.[key]?.viewOnce) {
-                        isViewOnce = true;
-                        messageTypeStr = key;
-                        break;
+            let vvMediaParent = null; // conteneur qui a la clé mediaMessage finale
+            // 1. Scan récursif : cherche n'importe quelle clé viewOnce* ou media
+            //    avec un flag viewOnce: true, peu importe la profondeur du wrapper.
+            //    Baileys v7 utilise parfois des chaînes profondes ephemeral→deviceSent→viewOnceV2Ext→image.
+            const scanForVV = (obj, depth = 0) => {
+                if (!obj || typeof obj !== 'object' || depth > 6) return null;
+                for (const [k, v] of Object.entries(obj)) {
+                    if (/^viewOnceMessage(V2(Extension)?)?$/.test(k) && v?.message) {
+                        const found = scanForVV(v.message, depth + 1);
+                        if (found) return found;
+                        // Le conteneur `v.message` a les clés media directement.
+                        const mediaKey = Object.keys(v.message).find(kk => /^(image|video|audio|document)Message$/.test(kk));
+                        if (mediaKey) return { mediaKey, mediaParent: v.message, wrapperKey: k };
+                        return null;
+                    }
+                    // Media direct avec viewOnce: true (forme v7 fréquente).
+                    if (/^(image|video|audio)Message$/.test(k) && v?.viewOnce === true) {
+                        return { mediaKey: k, mediaParent: obj, wrapperKey: 'inline' };
+                    }
+                    // Récursion dans les wrappers neutres.
+                    if (v && typeof v === 'object' && /^(ephemeralMessage|deviceSentMessage|futureProofMessage)$/.test(k) && v.message) {
+                        const found = scanForVV(v.message, depth + 1);
+                        if (found) return found;
                     }
                 }
+                return null;
+            };
+            const vvHit = scanForVV(msg.message || {});
+            if (vvHit) {
+                isViewOnce = true;
+                messageTypeStr = vvHit.mediaKey;
+                vvMediaParent = vvHit.mediaParent;
+                console.log(`[VV-DEBUG] VV détectée de ${participantJid || remoteJid} (wrapper=${vvHit.wrapperKey}, type=${messageTypeStr})`);
             }
 
             if (isViewOnce) {
                 try {
                     const senderJid = participantJid || remoteJid;
-                    // --- FOCUS VV ---
-                    if (focusVVJids.size > 0) {
-                        const senderNum = senderJid.split('@')[0];
-                        const chatNum = remoteJid.split('@')[0];
-                        const isTargeted = Array.from(focusVVJids).some(jid => 
-                            senderJid.includes(jid) || remoteJid.includes(jid) || senderNum === jid || chatNum === jid
-                        );
-                        if (!isTargeted) {
-                            console.log(`[VV-FILTER] Vue Unique de ${senderJid} ignorée (Focus actif)`);
-                            return;
-                        }
+                    // Résout LID → PN (sinon le numéro affiché est l'ID interne @lid
+                    // sans rapport avec le vrai numéro et la liste focus ne match pas).
+                    let resolvedSenderPn = msg.key.participantPn;
+                    if (!resolvedSenderPn && senderJid && senderJid.endsWith('@lid')) {
+                        try {
+                            resolvedSenderPn = await socket.signalRepository?.lidMapping?.getPNForLID?.(senderJid);
+                        } catch (_) {}
+                    }
+                    // Pour les chats privés, remoteJid peut aussi être en @lid : on tente
+                    // de résoudre pour récupérer le vrai numéro.
+                    let resolvedRemotePn = msg.key.remoteJidAlt;
+                    if (!resolvedRemotePn && remoteJid && remoteJid.endsWith('@lid')) {
+                        try {
+                            resolvedRemotePn = await socket.signalRepository?.lidMapping?.getPNForLID?.(remoteJid);
+                        } catch (_) {}
+                    }
+                    const senderPhoneNumber = (resolvedSenderPn || senderJid).split('@')[0].split(':')[0];
+                    const isGroupChat = remoteJid.endsWith('@g.us');
+
+                    // --- FILTRE GLOBAL VV ---
+                    // Plus de ciblage par numéro : soit on intercepte TOUT, soit rien.
+                    // Le user trouvait le focus trop capricieux (un typo de numéro
+                    // et plus rien ne passe). ON par défaut.
+                    if (!captureAllVV) {
+                        console.log(`[VV] Vue Unique de +${senderPhoneNumber} ignorée (interception désactivée)`);
+                        return;
+                    }
+                    console.log(`[VV] Interception globale active → capture VV de +${senderPhoneNumber}`);
+
+                    const ownerJid = socket.user.id.split(':')[0] + '@s.whatsapp.net';
+                    // downloadMediaMessage préfère recevoir un message dont `.message`
+                    // pointe directement sur le conteneur du mediaMessage, pas un
+                    // wrapper viewOnce. On reconstruit un pseudo-message à partir
+                    // du parent trouvé par scanForVV pour éviter les surprises.
+                    const dlMsg = vvMediaParent
+                        ? { ...msg, message: vvMediaParent }
+                        : msg;
+                    const buffer = await downloadMediaMessage(dlMsg, 'buffer', {}, { logger: pino({ level: 'silent' }), reuploadRequest: socket.updateMediaMessage });
+
+                    let sourceLabel = `Privé`;
+                    if (isGroupChat) {
+                        let groupName = remoteJid;
+                        try {
+                            const meta = await socket.groupMetadata(remoteJid);
+                            if (meta?.subject) groupName = meta.subject;
+                        } catch (_) {}
+                        sourceLabel = `Groupe "${groupName}"`;
                     }
 
-                    const senderPhoneNumber = senderJid.split('@')[0];
-                    const ownerJid = socket.user.id.split(':')[0] + '@s.whatsapp.net';
-                    const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger: pino({ level: 'silent' }), reuploadRequest: socket.updateMediaMessage });
-                    const caption = `👁️ *VUE UNIQUE DÉTECTÉE*\n👤 +${senderPhoneNumber}`;
+                    const caption = `👁️ *VUE UNIQUE DÉTECTÉE*\n👤 +${senderPhoneNumber}\n📍 ${sourceLabel}`;
                     if (messageTypeStr.includes('image')) await socket.sendMessage(ownerJid, { image: buffer, caption });
                     else if (messageTypeStr.includes('video')) await socket.sendMessage(ownerJid, { video: buffer, caption });
-                    else if (messageTypeStr.includes('audio')) await socket.sendMessage(ownerJid, { audio: buffer, mimetype: 'audio/mpeg', ptt: true });
-                    
+                    else if (messageTypeStr.includes('audio')) {
+                        await socket.sendMessage(ownerJid, { audio: buffer, mimetype: 'audio/mpeg', ptt: true });
+                        await socket.sendMessage(ownerJid, { text: caption });
+                    }
+
                     botStats.vvRecovered++;
                     botStats.byUser[senderPhoneNumber] = (botStats.byUser[senderPhoneNumber] || 0) + 1;
-                } catch (e) { console.error("[ERROR] Anti-View-Once failed"); }
+                    console.log(`[VV-CAPTURE] +${senderPhoneNumber} (${sourceLabel}) → envoyé à l'owner`);
+                } catch (e) { console.error("[ERROR] Anti-View-Once failed:", e.message); }
             }
 
             // --- GRACE PERIOD FOR STATUSES (OFFLINE CATCH-UP) ---
@@ -409,7 +783,8 @@ async function connectToWhatsApp() {
                     isViewOnly = false;
                     fixedEmoji = null;
                     focusViewOnly = false;
-                    focusVVJids.clear();
+                    captureAllVV = true;
+                    saveFocusVV();
                     antiDelete.clearFocus();
                     await socket.sendMessage(targetChat, { text: `🧹 *RÉINITIALISATION COMPLÈTE*\n\n- Focus Status : Vidé\n- Liste Discrète : Vidée\n- Auto-Like : ON ✅\n- Vision Seule : OFF ❌\n- Anti-Delete : Reset\n\nLe bot est revenu à sa configuration d'origine.` }, { quoted: msg });
                 } else if (cmd === 'dazdiscrete') {
@@ -508,35 +883,25 @@ async function connectToWhatsApp() {
                             await socket.sendMessage(targetChat, { text: `❌ Numéro invalide.` }, { quoted: msg });
                         }
                     }
-                } else if (cmd === 'dazvvonly') {
-                    const action = textLower.split(/\s+/)[1];
-                    const target = textLower.split(/\s+/)[2];
+                } else if (cmd === 'dazvvonly' || cmd === 'dazvv') {
+                    const action = (textLower.split(/\s+/)[1] || 'status').trim();
 
-                    if (!action) {
-                        const list = Array.from(focusVVJids).join(', ') || "Aucun";
-                        return await socket.sendMessage(targetChat, { text: `👁️ *Focus Vue Unique*\n\nUsage:\n- ${currentPrefix}dazvvonly add [num/here]\n- ${currentPrefix}dazvvonly remove [num/here]\n- ${currentPrefix}dazvvonly list\n- ${currentPrefix}dazvvonly off\n\nCibles actuelles: ${list}` }, { quoted: msg });
+                    if (action === 'on') {
+                        captureAllVV = true;
+                        saveFocusVV();
+                        console.log(`[VV] Interception globale ACTIVÉE par commande.`);
+                        return await socket.sendMessage(targetChat, { text: `✅ Interception Vue Unique *ACTIVÉE* (globale, peu importe la provenance).\n\n⚠️ WhatsApp ne route pas toujours les VV aux appareils liés. Si rien n'arrive, regarde les logs [VV-RAW] pour voir si Baileys a effectivement reçu la VV.` }, { quoted: msg });
                     }
 
                     if (action === 'off') {
-                        focusVVJids.clear();
-                        await socket.sendMessage(targetChat, { text: `✅ Focus Vue Unique désactivé.` }, { quoted: msg });
-                    } else if (action === 'list') {
-                        const list = Array.from(focusVVJids).map(j => `• ${j}`).join('\n') || "Aucune cible.";
-                        await socket.sendMessage(targetChat, { text: `📋 *Cibles Vue Unique :*\n${list}` }, { quoted: msg });
-                    } else if (action === 'add' || action === 'remove') {
-                        if (!target) return await socket.sendMessage(targetChat, { text: `❌ Spécifiez un numéro ou 'here'.` }, { quoted: msg });
-                        
-                        let jidToProcess = target === 'here' ? remoteJid : target.replace(/\D/g, '');
-                        if (jidToProcess.length < 5) return await socket.sendMessage(targetChat, { text: `❌ Cible invalide.` }, { quoted: msg });
-
-                        if (action === 'add') {
-                            focusVVJids.add(jidToProcess);
-                            await socket.sendMessage(targetChat, { text: `✅ Cible ajoutée au focus Vue Unique.` }, { quoted: msg });
-                        } else {
-                            focusVVJids.delete(jidToProcess);
-                            await socket.sendMessage(targetChat, { text: `✅ Cible retirée du focus Vue Unique.` }, { quoted: msg });
-                        }
+                        captureAllVV = false;
+                        saveFocusVV();
+                        console.log(`[VV] Interception globale DÉSACTIVÉE par commande.`);
+                        return await socket.sendMessage(targetChat, { text: `✅ Interception Vue Unique *DÉSACTIVÉE*. Les VV ne seront plus capturées.` }, { quoted: msg });
                     }
+
+                    // 'status', 'list', ou rien : on affiche l'état actuel + l'aide
+                    return await socket.sendMessage(targetChat, { text: `👁️ *INTERCEPTION VUE UNIQUE*\n\nÉtat actuel : ${captureAllVV ? '🟢 ACTIVÉE' : '🔴 DÉSACTIVÉE'}\n\nQuand activée, toute Vue Unique reçue (privé ou groupe, peu importe l'auteur) est téléchargée automatiquement et renvoyée dans ta discussion personnelle.\n\nUsage :\n- ${currentPrefix}dazvv on      (active la capture globale)\n- ${currentPrefix}dazvv off     (désactive)\n- ${currentPrefix}dazvv         (affiche l'état)` }, { quoted: msg });
                 } else if (cmd === 'dazsticker') {
                     const contextInfo = msg.message.extendedTextMessage?.contextInfo;
                     const quoted = contextInfo?.quotedMessage;
@@ -606,10 +971,27 @@ async function connectToWhatsApp() {
                 } else if (cmd === 'planstatus' || cmd === 'ps' || cmd === 'planmsg' || cmd === 'pm') {
                     const contextInfo = msg.message.extendedTextMessage?.contextInfo;
                     const quoted = contextInfo?.quotedMessage;
-                    const time = textLower.split(/\s+/)[1];
+                    const isMsg = (cmd === 'planmsg' || cmd === 'pm');
 
-                    if (!time || !/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(time)) {
-                        return await socket.sendMessage(targetChat, { text: `❌ Format d'heure invalide. Utilisez HH:mm (ex: 14:30).` }, { quoted: msg });
+                    // Reconstruit l'input temporel. Le dernier token d'un planmsg est
+                    // le numéro destinataire, donc on l'exclut. planstatus consomme
+                    // tout le reste comme date/heure (accepte HH:MM, JJ/MM HH:MM,
+                    // ou JJ/MM/AAAA HH:MM).
+                    const tokens = textContent.trim().split(/\s+/).slice(1);
+                    let targetToken = null;
+                    let scheduleTokens = tokens;
+                    if (isMsg && tokens.length > 0) {
+                        const last = tokens[tokens.length - 1];
+                        if (!/^\d{1,2}:\d{2}$/.test(last) && !/^\d{1,2}\/\d{1,2}(\/\d{2,4})?$/.test(last)) {
+                            targetToken = last;
+                            scheduleTokens = tokens.slice(0, -1);
+                        }
+                    }
+                    const scheduleInput = scheduleTokens.join(' ');
+
+                    const parsed = scheduler.parseSchedule(scheduleInput);
+                    if (parsed.error) {
+                        return await socket.sendMessage(targetChat, { text: `❌ ${parsed.error}\n\nExemples :\n- ${currentPrefix}${cmd} 14:30\n- ${currentPrefix}${cmd} 25/12 09:00${isMsg ? ' 22955724800' : ''}\n- ${currentPrefix}${cmd} 25/12/2026 09:00${isMsg ? ' 22955724800' : ''}` }, { quoted: msg });
                     }
 
                     if (!quoted) {
@@ -636,35 +1018,66 @@ async function connectToWhatsApp() {
                     } else if (mediaType === 'audioMessage') {
                         const buffer = await downloadMediaMessage({ message: quoted }, 'buffer', {}, { logger: pino({ level: 'silent' }) });
                         messageToPlan = { audio: buffer, mimetype: quoted.audioMessage.mimetype, ptt: quoted.audioMessage.ptt };
+                    } else {
+                        return await socket.sendMessage(targetChat, { text: `❌ Type de message non supporté pour la programmation : ${mediaType}` }, { quoted: msg });
                     }
 
-                    if (cmd === 'planstatus' || cmd === 'ps') {
-                        scheduler.addTask({
+                    if (!isMsg) {
+                        const entry = scheduler.addTask({
                             type: 'status',
-                            time: time,
+                            ts: parsed.ts,
+                            label: parsed.label,
                             message: messageToPlan
                         });
-                        await socket.sendMessage(targetChat, { text: `✅ Statut programmé pour ${time} !` }, { quoted: msg });
+                        await socket.sendMessage(targetChat, { text: `✅ Statut programmé pour *${parsed.label}* (tâche #${entry.id}).` }, { quoted: msg });
                     } else {
-                        const target = textLower.split(/\s+/)[2] || (socket.user.id.split(':')[0] + '@s.whatsapp.net');
+                        const target = targetToken || (socket.user.id.split(':')[0]);
                         const cleanTarget = target.includes('@') ? target : (target.replace(/\D/g, '') + '@s.whatsapp.net');
-                        
-                        scheduler.addTask({
+
+                        const entry = scheduler.addTask({
                             type: 'message',
-                            time: time,
+                            ts: parsed.ts,
+                            label: parsed.label,
                             target: cleanTarget,
                             message: messageToPlan
                         });
-                        await socket.sendMessage(targetChat, { text: `✅ Message programmé pour ${time} vers ${cleanTarget} !` }, { quoted: msg });
+                        await socket.sendMessage(targetChat, { text: `✅ Message programmé pour *${parsed.label}* vers ${cleanTarget} (tâche #${entry.id}).` }, { quoted: msg });
                     }
+                } else if (cmd === 'planlist' || cmd === 'pl') {
+                    const tasks = scheduler.listTasks();
+                    if (tasks.length === 0) {
+                        return await socket.sendMessage(targetChat, { text: `📭 Aucune tâche programmée.` }, { quoted: msg });
+                    }
+                    const rows = tasks.map(t => {
+                        const typeLbl = t.type === 'status' ? '📢 Statut' : `💬 → ${t.target || '?'}`;
+                        return `#${t.id} • ${t.label} • ${typeLbl}`;
+                    }).join('\n');
+                    await socket.sendMessage(targetChat, { text: `⏰ *Tâches programmées* (${tasks.length})\n\n${rows}\n\nPour annuler : ${currentPrefix}plancancel <id>` }, { quoted: msg });
+                } else if (cmd === 'plancancel' || cmd === 'pc') {
+                    const idArg = textLower.split(/\s+/)[1];
+                    if (!idArg) return await socket.sendMessage(targetChat, { text: `❌ Spécifie l'id (ex: ${currentPrefix}plancancel 3). Liste avec ${currentPrefix}planlist.` }, { quoted: msg });
+                    const removed = scheduler.cancelTask(idArg);
+                    if (!removed) return await socket.sendMessage(targetChat, { text: `❌ Tâche #${idArg} introuvable.` }, { quoted: msg });
+                    await socket.sendMessage(targetChat, { text: `🗑️ Tâche #${removed.id} (${removed.type} - ${removed.label}) annulée.` }, { quoted: msg });
+                } else if (cmd === 'planreset') {
+                    const count = scheduler.clearTasks();
+                    await socket.sendMessage(targetChat, { text: `🧹 ${count} tâche(s) supprimée(s).` }, { quoted: msg });
                 } else if (cmd === 'dazconnect') {
-                    const arg = textLower.split(/\s+/)[1];
+                    const arg = (textLower.split(/\s+/)[1] || '').trim();
                     if (arg === 'on') {
                         config.sendWelcomeMessage = true;
                         await socket.sendMessage(targetChat, { text: `✅ Message de connexion activé.` }, { quoted: msg });
                     } else if (arg === 'off') {
                         config.sendWelcomeMessage = false;
                         await socket.sendMessage(targetChat, { text: `❌ Message de connexion désactivé.` }, { quoted: msg });
+                    } else {
+                        // Pas d'argument OU `show` : on (ré)envoie la bannière
+                        // dans le chat courant pour prouver que le bot est connecté.
+                        try {
+                            await sendConnectBanner(socket, targetChat);
+                        } catch (e) {
+                            await socket.sendMessage(targetChat, { text: `❌ Envoi bannière échoué: ${e.message}` }, { quoted: msg });
+                        }
                     }
                 } else if (cmd === 'setprefix') {
                     const newPrefix = textArgs.split(/\s+/)[0];
@@ -698,45 +1111,72 @@ async function connectToWhatsApp() {
                         await socket.sendMessage(targetChat, { text: `📊 Status Anti-Delete: ${config.antiDeleteEnabled ? "ON ✅" : "OFF ❌"}` }, { quoted: msg });
                     }
                 } else if (cmd === 'menu' || cmd === 'help' || cmd === 'h' || cmd === 'guide') {
-                    const menuText = `╭───〔 🤖 *DAZBOT V1.0 - GUIDE COMPLET* 〕───⬣
-│
-│ ⚙️ *CONFIGURATION*
-│ ߷ *${currentPrefix}setprefix [symbole]*
-│   └ Ex: ${currentPrefix}setprefix !
-│ ߷ *${currentPrefix}dazreset* : Reset TOUS les focus
-│ ߷ *${currentPrefix}host* : Infos serveur
-│
-│ 🎯 *FOCUS STATUS (LIKE CIBLÉ)*
-│ ߷ *${currentPrefix}dazonly add [num] [emoji]*
-│   └ Ex: ${currentPrefix}dazonly add 225... 🔥
-│ ߷ *${currentPrefix}dazonly remove [num]*
-│ ߷ *${currentPrefix}dazonly list* (Voir ta liste)
-│ ߷ *${currentPrefix}dazonly off* (Vider la liste)
-│
-│ 🟢 *GLOBAL STATUS (TOUT LE MONDE)*
-│ ߷ *${currentPrefix}dazstatus [on/off]*
-│   └ ON : Like tout le monde
-│   └ OFF : Like UNIQUEMENT ton Focus
-│ ߷ *${currentPrefix}dazview [on/off]*
-│   └ ON : Vision seule (Pas de like même focus)
-│ ߷ *${currentPrefix}dazdiscrete add [num]*
-│   └ Vision seule pour CETTE personne
-│ ߷ *${currentPrefix}dazdiscrete list*
-│ ߷ *${currentPrefix}dazstatusuni [emoji/random]*
-│ ߷ *${currentPrefix}dazsticker* (Rép. sticker)
-│ ߷ *${currentPrefix}dazstats* : Statistiques
-│
-│ 🛡️ *PROTECTION (AUTO)*
-│ ߷ *${currentPrefix}antidelete [on/off]*
-│ ߷ *${currentPrefix}dazantionly [add/remove/list/off]*
-│ ߷ *${currentPrefix}dazvvonly [add/remove/list/off]*
-│
-│ 📅 *PLANIFICATEUR (HH:mm)*
-│ ߷ *${currentPrefix}ps [heure]* (Rép. média/texte)
-│ ߷ *${currentPrefix}pm [heure] [num]* (Rép. média)
-│
-╰──────────────⬣
- *© 2025 DAZBOT BY DAZ*`;
+                    const p = currentPrefix;
+                    const menuText =
+`╭━━━━━━━━━━━━━━━━━━━━━╮
+┃  🤖  *D A Z B O T*   ┃
+┃      ·  v1.0  ·      ┃
+╰━━━━━━━━━━━━━━━━━━━━━╯
+
+_Préfixe actuel_ : *${p}*
+_Tape une commande en réponse à un message quand c'est précisé (📎)._
+
+━━━━━━━━━━━━━━━━━━━━━━
+🎯  *STATUS — LIKE CIBLÉ*
+━━━━━━━━━━━━━━━━━━━━━━
+◦ *${p}dazonly add* _num_ _emoji_
+  _ex: ${p}dazonly add 22955724800 🔥_
+◦ *${p}dazonly remove* _num_
+◦ *${p}dazonly list*
+◦ *${p}dazonly off*
+
+━━━━━━━━━━━━━━━━━━━━━━
+🟢  *STATUS — GLOBAL / VISION*
+━━━━━━━━━━━━━━━━━━━━━━
+◦ *${p}dazstatus on|off*
+  _on : like tout le monde_
+  _off : like uniquement le focus_
+◦ *${p}dazview on|off*
+  _vision seule, aucun like même focus_
+◦ *${p}dazdiscrete add* _num_
+◦ *${p}dazdiscrete list*
+◦ *${p}dazstatusuni* _emoji|random_
+◦ *${p}dazsticker*  📎
+◦ *${p}dazstats*
+
+━━━━━━━━━━━━━━━━━━━━━━
+🛡️  *PROTECTION AUTOMATIQUE*
+━━━━━━━━━━━━━━━━━━━━━━
+◦ *${p}antidelete on|off*
+◦ *${p}dazantionly add|remove|list|off* _num_
+◦ *${p}dazvv on|off*
+  _capture vue-unique (toutes sources)_
+
+━━━━━━━━━━━━━━━━━━━━━━
+📅  *PLANIFICATEUR*
+━━━━━━━━━━━━━━━━━━━━━━
+◦ *${p}ps* _HH:MM_  📎
+  _ou ${p}ps JJ/MM HH:MM_
+  _ou ${p}ps JJ/MM/AAAA HH:MM_
+  _→ statut programmé_
+◦ *${p}pm* _HH:MM num_  📎
+  _→ message privé programmé_
+◦ *${p}planlist*
+◦ *${p}plancancel* _id_
+◦ *${p}planreset*
+
+━━━━━━━━━━━━━━━━━━━━━━
+⚙️  *CONFIGURATION*
+━━━━━━━━━━━━━━━━━━━━━━
+◦ *${p}setprefix* _symbole_
+  _ex: ${p}setprefix !_
+◦ *${p}dazreset*   _reset tous les focus_
+◦ *${p}dazconnect* _show|on|off_
+  _show : réaffiche la bannière_
+◦ *${p}host*       _infos serveur_
+
+━━━━━━━━━━━━━━━━━━━━━━
+_© 2025 · DAZBOT by DAZ_`;
                     await socket.sendMessage(targetChat, { text: menuText }, { quoted: msg });
                 }
 
@@ -801,8 +1241,17 @@ async function connectToWhatsApp() {
                     return;
                 }
 
-                // Récupération du vrai numéro si disponible
-                const senderPhoneNumber = (msg.key.participantPn || senderJid).split('@')[0];
+                // Récupération du vrai numéro si disponible. WhatsApp v7 identifie
+                // les posteurs de statut via leur LID (ex: 161358163222743@lid) qui
+                // n'a aucun lien mathématique avec leur vrai numéro. Sans résolution,
+                // les lookups focus/discrete (keyed par numéro) ne matchent jamais.
+                let resolvedStatusPn = msg.key.participantPn;
+                if (!resolvedStatusPn && senderJid && senderJid.endsWith('@lid')) {
+                    try {
+                        resolvedStatusPn = await socket.signalRepository?.lidMapping?.getPNForLID?.(senderJid);
+                    } catch (_) {}
+                }
+                const senderPhoneNumber = (resolvedStatusPn || senderJid).split('@')[0].split(':')[0];
                 const emojis = config.reactionEmojis || ["❤️"];
                 const reactionEmojiToUse = fixedEmoji ? fixedEmoji : emojis[Math.floor(Math.random() * emojis.length)];
 
@@ -815,8 +1264,13 @@ async function connectToWhatsApp() {
 
                             console.log(`[STATUS-READ] +${senderPhoneNumber} (${msg.key.id})`);
 
-                            // 2. Envoyer le signal de lecture sur les deux canaux (Broadcast + Privé)
-                            await socket.sendReceipt('status@broadcast', senderJid, [msg.key.id], 'read');
+                            // 2. Envoyer le signal de lecture "read".
+                            // Le participant du receipt doit être le JID téléphonique résolu
+                            // (pas le LID), sinon WhatsApp accepte le receipt côté serveur mais
+                            // ne propage pas le "vu" au client mobile du poster. Même logique
+                            // que pour les réactions.
+                            const receiptParticipant = resolvedStatusPn || senderJid;
+                            await socket.sendReceipt('status@broadcast', receiptParticipant, [msg.key.id], 'read');
                             await socket.readMessages([msg.key]);
 
                             botStats.statusRead++;

@@ -30,6 +30,27 @@ module.exports = {
     // Provide your phone number if using pairing code (e.g., "1234567890")
     // Include the country code but no '+' sign or spaces.
     phoneNumber: "22947726871",
+
+    // Nom du propriétaire affiché dans le message de connexion envoyé
+    // dans la discussion perso au démarrage du bot. Si vide, le bot utilise
+    // le pushName WhatsApp récupéré automatiquement à la connexion.
+    ownerName: "Daziano",
+
+    // Numéro du propriétaire affiché dans le message de connexion (sans +).
+    // Peut être différent du numéro d'appairage (phoneNumber) si tu veux
+    // afficher un autre numéro de contact.
+    ownerNumber: "22955724800",
+
+    // URL de la bannière envoyée à chaque connexion dans la discussion perso.
+    // Laisse vide pour désactiver l'image (le bot enverra juste le texte).
+    bootBannerUrl: "https://i.postimg.cc/rFR6bHgL/17762702118f23.png",
+
+    // Citations affichées dans le message de connexion (toutes affichées).
+    // Ajoute / supprime / modifie librement.
+    bootQuotes: [
+        "Et tout ça 🤒, c'est le destin 🫠🤲🧎",
+        "St4y F0cuS, St4Y D3termi4t3 🫠🤲🧎"
+    ],
     
     // Supabase credentials for remote auth state storage 
     supabaseUrl: "", 
@@ -38,6 +59,11 @@ module.exports = {
     // Anti-Delete settings
     antiDeleteEnabled: true,
     antiDeleteChat: "", // Default destination for deleted messages
+
+    // Fuseau horaire utilisé pour interpréter les heures passées aux commandes
+    // de planification (?planstatus / ?planmsg). Par défaut Africa/Porto-Novo
+    // (UTC+1, Bénin). Change en "Europe/Paris", "America/New_York", etc.
+    timezone: "Africa/Porto-Novo",
 
     // Global settings
     sendWelcomeMessage: true // Whether to send a message to yourself when the bot connects
