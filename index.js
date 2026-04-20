@@ -1463,93 +1463,139 @@ async function connectToWhatsApp() {
                             await socket.sendMessage(targetChat, { text: `🤖 *${label}* (${list.length})\n${list.length ? list.map(n => '• +' + n).join('\n') : '_(vide)_'}\n\n${hint}\n\n*Usage*\n- ${currentPrefix}dazai ${normArg} add <numéro>\n- ${currentPrefix}dazai ${normArg} remove <numéro>\n- ${currentPrefix}dazai ${normArg} clear` }, { quoted: msg });
                         }
                     } else {
-                        const providerInfo = aiService
-                            ? `🟢 init (${aiService.provider} / ${aiService._currentModel()})`
-                            : `🔴 non init — ajoute ${envKeyForProvider(config.aiProvider)}`;
-                        const chainInfo = aiChain.length ? aiChain.join(' → ') : '(vide)';
-                        const allowList = (config.aiAllowedNumbers || []).map(n => '+' + n).join(', ') || '(tous)';
-                        const blockList = (config.aiBlockedNumbers || []).map(n => '+' + n).join(', ') || '(aucun)';
-                        const romList = (config.aiRomanticNumbers || []);
-                        const romInfo = romList.length ? `${romList.length} contact${romList.length > 1 ? 's' : ''} (${romList.map(n => '+' + n).join(', ')})` : '(aucune)';
-                        await socket.sendMessage(targetChat, { text: `🤖 *Chatbot IA DazBot*\n\n- Service : ${providerInfo}\n- Fallback auto : ${chainInfo}\n- Auto-reply : ${config.aiAutoReply ? '🟢 ON' : '🔴 OFF'}\n- Whitelist : ${allowList}\n- Blacklist : ${blockList}\n- 💕 Copines : ${romInfo}\n\n*Commandes*\n- ${currentPrefix}dazai on / off\n- ${currentPrefix}dazai stats\n- ${currentPrefix}dazai contacts        _(liste les contacts actifs)_\n- ${currentPrefix}dazai clear           (cette conversation)\n- ${currentPrefix}dazai clear all       (toutes)\n- ${currentPrefix}dazai model <nom>\n- ${currentPrefix}dazai provider [nom]  _(gemini/groq/cerebras/openrouter/openai)_\n- ${currentPrefix}dazai chain <p1 p2..|reset>   _(ordre de fallback)_\n- ${currentPrefix}dazai reload           (recharge personality.json)\n- ${currentPrefix}dazai allow add/remove/list/clear <numéro>   _(restreindre à certains contacts)_\n- ${currentPrefix}dazai block add/remove/list/clear <numéro>   _(ignorer certains contacts)_\n- ${currentPrefix}dazai romantic add/remove/list/clear <numéro> _(copine : mots doux)_` }, { quoted: msg });
+                        // ── Status chatbot IA : rendu "dashboard" lisible (banner
+                        //    stylisé + colonnes providers + compteurs + commandes
+                        //    les plus utiles). Évite le gros mur de texte.
+                        const p = currentPrefix;
+                        const allProviders = ['gemini', 'groq', 'cerebras', 'openrouter', 'openai'];
+                        const providerLabel = { gemini: 'Gemini', groq: 'Groq', cerebras: 'Cerebras', openrouter: 'OpenRouter', openai: 'OpenAI' };
+                        const chainPos = Object.fromEntries(aiChain.map((n, i) => [n, i + 1]));
+                        const providerLines = allProviders.map(name => {
+                            const inPool = aiPool.has(name) && aiPool.get(name);
+                            const isActive = aiService && aiService.provider === name;
+                            const pos = chainPos[name];
+                            const dot = isActive ? '🟢' : inPool ? '⚪' : '⚫';
+                            const tag = isActive ? '  ← actif' : (pos ? `  (fallback #${pos})` : '');
+                            const model = inPool ? ` · \`${inPool._currentModel()}\`` : '';
+                            return `${dot} *${providerLabel[name]}*${model}${tag}`;
+                        }).join('\n');
+                        const autoReply = config.aiAutoReply ? '🟢 *ACTIVÉ*' : '🔴 *DÉSACTIVÉ*';
+                        const convCount = aiService ? aiService.getStats().activeConversations : 0;
+                        const allowArr = config.aiAllowedNumbers || [];
+                        const blockArr = config.aiBlockedNumbers || [];
+                        const romArr = config.aiRomanticNumbers || [];
+                        const allowLine = allowArr.length ? `*${allowArr.length}* contact${allowArr.length > 1 ? 's' : ''}` : '_tous les contacts_';
+                        const blockLine = blockArr.length ? `*${blockArr.length}* bloqué${blockArr.length > 1 ? 's' : ''}` : '_aucun_';
+                        const romLine = romArr.length ? `*${romArr.length}* copine${romArr.length > 1 ? 's' : ''} 💕` : '_aucune_';
+
+                        const statusText =
+`╭─────────────────────────╮
+│  🤖  *D A Z A I*   ·  💬  │
+│    _chatbot personnel_    │
+╰─────────────────────────╯
+
+┌─ ⚡ *Auto-reply*
+│   ${autoReply}
+│
+├─ 🧠 *Providers*
+│   ${providerLines.split('\n').join('\n│   ')}
+│
+├─ 🔁 *Chaîne de fallback*
+│   ${aiChain.length ? aiChain.map(n => providerLabel[n] || n).join(' → ') : '_(vide)_'}
+│
+├─ 👥 *Audience*
+│   Whitelist : ${allowLine}
+│   Blacklist : ${blockLine}
+│   Romantique : ${romLine}
+│
+└─ 💬 *Conversations actives* : ${convCount}
+
+━━━━━━━━━━━━━━━━━━━━━━
+⚙️  *RACCOURCIS*
+━━━━━━━━━━━━━━━━━━━━━━
+◦ *${p}dazai on* / *off*         _activer / couper_
+◦ *${p}dazai stats*              _compteurs_
+◦ *${p}dazai contacts*           _conversations en cours_
+◦ *${p}dazai provider* _nom_       _switch primaire_
+◦ *${p}dazai model* _nom_          _change le modèle actif_
+◦ *${p}dazai chain* _p1 p2 …|reset_  _ordre fallback_
+◦ *${p}dazai reload*             _recharge personality.json_
+◦ *${p}dazai clear* [_all_]         _reset historique_
+
+━━━━━━━━━━━━━━━━━━━━━━
+👥  *FILTRES*
+━━━━━━━━━━━━━━━━━━━━━━
+◦ *${p}dazai allow* _add/remove/list/clear_ _num_
+◦ *${p}dazai block* _add/remove/list/clear_ _num_
+◦ *${p}dazai romantic* _add/remove/list/clear_ _num_
+   _→ mots doux : bébé / mon cœur / ma belle / chérie / bb_`;
+                        await socket.sendMessage(targetChat, { text: statusText }, { quoted: msg });
                     }
                 } else if (cmd === 'menu' || cmd === 'help' || cmd === 'h' || cmd === 'guide') {
                     const p = currentPrefix;
+                    // ── Uptime formaté compact (xd xh xm)
+                    const upSec = Math.max(0, Math.floor(Date.now() / 1000) - botStartTime);
+                    const ud = Math.floor(upSec / 86400);
+                    const uh = Math.floor((upSec % 86400) / 3600);
+                    const um = Math.floor((upSec % 3600) / 60);
+                    const uptime = ud ? `${ud}j ${uh}h ${um}m` : uh ? `${uh}h ${um}m` : `${um}m`;
+                    const aiDot = aiService && config.aiAutoReply ? '🟢' : aiService ? '🟡' : '🔴';
+                    const ownerTag = config.ownerName || 'DAZ';
+
                     const menuText =
-`╭━━━━━━━━━━━━━━━━━━━━━╮
-┃  🤖  *D A Z B O T*   ┃
-┃      ·  v1.0  ·      ┃
-╰━━━━━━━━━━━━━━━━━━━━━╯
+`╭─────────────────────────╮
+│   ⚡ *D A Z · B O T* ⚡   │
+│    _· command center ·_    │
+╰─────────────────────────╯
 
-_Préfixe actuel_ : *${p}*
-_Tape une commande en réponse à un message quand c'est précisé (📎)._
+  ◈ _Préfixe_   : *${p}*
+  ◈ _Uptime_    : *${uptime}*
+  ◈ _Chatbot_   : ${aiDot} *${config.aiAutoReply ? 'ON' : 'OFF'}*
+  ◈ _Owner_     : *${ownerTag}*
 
-━━━━━━━━━━━━━━━━━━━━━━
-🎯  *STATUS — LIKE CIBLÉ*
-━━━━━━━━━━━━━━━━━━━━━━
-◦ *${p}dazonly add* _num_ _emoji_
-  _ex: ${p}dazonly add 22955724800 🔥_
-◦ *${p}dazonly remove* _num_
-◦ *${p}dazonly list*
-◦ *${p}dazonly off*
+_📎 = réponds à un message pour utiliser la commande_
 
-━━━━━━━━━━━━━━━━━━━━━━
-🟢  *STATUS — GLOBAL / VISION*
-━━━━━━━━━━━━━━━━━━━━━━
-◦ *${p}dazstatus on|off*
-  _on : like tout le monde_
-  _off : like uniquement le focus_
-◦ *${p}dazview on|off*
-  _vision seule, aucun like même focus_
-◦ *${p}dazdiscrete add* _num_
-◦ *${p}dazdiscrete list*
-◦ *${p}dazstatusuni* _emoji|random_
-◦ *${p}dazsticker*  📎
-◦ *${p}dazstats*
+━━━━━━━━  🎯  *LIKE CIBLÉ*  ━━━━━━━━
+   *${p}dazonly add* _num_ _emoji_
+   _ex · ${p}dazonly add 22955724800 🔥_
+   *${p}dazonly* _remove · list · off_
 
-━━━━━━━━━━━━━━━━━━━━━━
-🛡️  *PROTECTION AUTOMATIQUE*
-━━━━━━━━━━━━━━━━━━━━━━
-◦ *${p}antidelete on|off*
-◦ *${p}dazantionly add|remove|list|off* _num_
-◦ *${p}dazvv on|off*
-  _capture vue-unique (toutes sources)_
+━━━━  🟢  *STATUS · VISION*  ━━━━
+   *${p}dazstatus on|off*     _like global_
+   *${p}dazview on|off*       _vision seule_
+   *${p}dazdiscrete* _add · list_   _num_
+   *${p}dazstatusuni* _emoji|random_
+   *${p}dazsticker* 📎 · *${p}dazstats*
 
-━━━━━━━━━━━━━━━━━━━━━━
-📅  *PLANIFICATEUR*
-━━━━━━━━━━━━━━━━━━━━━━
-◦ *${p}ps* _HH:MM_  📎
-  _ou ${p}ps JJ/MM HH:MM_
-  _ou ${p}ps JJ/MM/AAAA HH:MM_
-  _→ statut programmé_
-◦ *${p}pm* _HH:MM num_  📎
-  _→ message privé programmé_
-◦ *${p}planlist*
-◦ *${p}plancancel* _id_
-◦ *${p}planreset*
+━━━━━  🛡️  *PROTECTION*  ━━━━━
+   *${p}antidelete on|off*
+   *${p}dazantionly* _add · remove · list · off_
+   *${p}dazvv on|off*        _vue-unique_
 
-━━━━━━━━━━━━━━━━━━━━━━
-🤖  *CHATBOT IA*
-━━━━━━━━━━━━━━━━━━━━━━
-◦ *${p}dazai*               _état_
-◦ *${p}dazai on|off*        _active / coupe_
-◦ *${p}dazai stats*
-◦ *${p}dazai clear [all]*
-◦ *${p}dazai model* _nom_
-◦ *${p}dazai reload*        _recharge personality.json_
+━━━━━  📅  *PLANIFICATEUR*  ━━━━━
+   *${p}ps* _HH:MM_  📎           _statut_
+   _· ${p}ps JJ/MM HH:MM_
+   _· ${p}ps JJ/MM/AAAA HH:MM_
+   *${p}pm* _HH:MM num_  📎     _privé_
+   *${p}planlist* · *${p}plancancel* _id_
+   *${p}planreset*
 
-━━━━━━━━━━━━━━━━━━━━━━
-⚙️  *CONFIGURATION*
-━━━━━━━━━━━━━━━━━━━━━━
-◦ *${p}setprefix* _symbole_
-  _ex: ${p}setprefix !_
-◦ *${p}dazreset*   _reset tous les focus_
-◦ *${p}dazconnect* _show|on|off_
-  _show : réaffiche la bannière_
-◦ *${p}host*       _infos serveur_
+━━━━━━  🤖  *CHATBOT IA*  ━━━━━━
+   *${p}dazai*                 _dashboard_
+   *${p}dazai on|off*          _activer_
+   *${p}dazai provider* _nom_   _gemini·groq·…_
+   *${p}dazai chain* _p1 p2…_    _ordre fallback_
+   *${p}dazai allow · block · romantic*
+   *${p}dazai model · reload · clear · stats*
 
-━━━━━━━━━━━━━━━━━━━━━━
-_© 2025 · DAZBOT by DAZ_`;
+━━━━━━  ⚙️  *CONFIG*  ━━━━━━
+   *${p}setprefix* _symbole_   _ex: ${p}setprefix !_
+   *${p}dazconnect* _show · on · off_
+   *${p}dazreset*   _reset focus_
+   *${p}host*       _infos serveur_
+
+━━━━━━━━━━━━━━━━━━━━━━━━━
+       _© 2025 · DAZBOT · by ${ownerTag}_`;
                     await socket.sendMessage(targetChat, { text: menuText }, { quoted: msg });
                 }
 
