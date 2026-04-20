@@ -522,32 +522,16 @@ async function connectToWhatsApp() {
             const msg = m.messages[0];
             if (!msg || !msg.message) return;
 
-            // --- PATCH VV EXPÉRIMENTAL ---
-            // Quand captureAllVV est actif et qu'on reçoit un message avec un
-            // wrapper de type INCONNU (pas un type standard), on demande
-            // explicitement à WA de re-livrer le contenu via
-            // requestPlaceholderResend. WA bloque normalement la re-livraison
-            // aux linked devices mais certains forks rapportent que ça passe
-            // parfois.
-            //
-            // IMPORTANT : l'ancienne heuristique incluait aussi "conversation
-            // de moins de 200 chars" qui matchait la quasi-totalité des
-            // messages texte normaux ("ok", "salut", etc.) — ça déclenchait
-            // un placeholder resend sur presque chaque message reçu, risque
-            // évident de rate-limit / flag du compte. On ne conserve plus que
-            // le marqueur "wrapper inconnu" qui est bien plus ciblé.
-            if (captureAllVV && !msg.key.fromMe && msg.message && socket.requestPlaceholderResend) {
-                const topKeys = Object.keys(msg.message);
-                const hasUnknownWrapper = topKeys.some(k => !/^(conversation|extendedTextMessage|imageMessage|videoMessage|audioMessage|stickerMessage|documentMessage|reactionMessage|protocolMessage|messageContextInfo|senderKeyDistributionMessage|contactMessage|locationMessage|pollCreationMessage|pollUpdateMessage)$/.test(k));
-                if (hasUnknownWrapper) {
-                    try {
-                        const reqId = await socket.requestPlaceholderResend(msg.key);
-                        if (reqId) console.log(`[VV-PATCH] requestPlaceholderResend(${msg.key.id}) → requestId=${reqId} (topKeys=${topKeys.join(',')})`);
-                    } catch (e) {
-                        console.log(`[VV-PATCH] requestPlaceholderResend failed: ${e.message}`);
-                    }
-                }
-            }
+            // Note : le patch VV expérimental (requestPlaceholderResend sur
+            // wrappers inconnus) a été retiré. Il ne fonctionnait pas — WA
+            // refuse systématiquement de re-livrer une VV à un linked device
+            // au niveau serveur — et l'heuristique de détection basée sur un
+            // whitelist de types de messages était fragile : tout nouveau
+            // type ajouté par WhatsApp (ex: ephemeralMessage, editedMessage,
+            // listMessage…) déclenchait un placeholder resend sur chaque
+            // message reçu, avec un vrai risque de rate-limit / flag du
+            // compte. La commande `?dazvv on/off` reste disponible mais
+            // n'effectue plus ce patch cassé.
 
             const remoteJid = msg.key.remoteJid;
             const participantJid = msg.key.participant;
