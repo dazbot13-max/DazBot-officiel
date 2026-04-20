@@ -460,18 +460,25 @@ async function connectToWhatsApp() {
             } catch (e) { }
 
             const botJid = socket.user.id.split(':')[0] + '@s.whatsapp.net';
-            const connectedNumber = (config.ownerNumber && config.ownerNumber.trim())
-                || socket.user.id.split(':')[0].split('@')[0];
+            // Numéro réellement appairé sur ce device (tiré de socket.user.id).
+            const actualConnectedNumber = socket.user.id.split(':')[0].split('@')[0];
+            // Numéro "owner" affiché (configurable, peut différer du numéro appairé).
+            const ownerNumber = (config.ownerNumber && config.ownerNumber.trim())
+                || actualConnectedNumber;
             const ownerName = (config.ownerName && config.ownerName.trim())
                 || socket.user.name
                 || socket.user.verifiedName
                 || 'Propriétaire';
-            const welcomeCaption = `╭───〔 🤖 *DAZBOT connecté ✅* 〕───⬣\n` +
+            const quotes = Array.isArray(config.bootQuotes) ? config.bootQuotes.filter(q => q && q.trim()) : [];
+            const pickedQuote = quotes.length ? quotes[Math.floor(Math.random() * quotes.length)] : '';
+            const welcomeCaption =
+                `╭───〔 🤖 *DAZBOT connecté ✅* 〕───⬣\n` +
                 `│ ߷ *Propriétaire*      ➜ ${ownerName}\n` +
-                `│ ߷ *Numéro*            ➜ +${connectedNumber}\n` +
-                `│ ߷ *Personne connectée* ➜ +${connectedNumber}\n` +
+                `│ ߷ *Numéro*            ➜ +${ownerNumber}\n` +
+                `│ ߷ *Personne connectée* ➜ +${actualConnectedNumber}\n` +
                 `│ ߷ *Mode*              ➜ Auto-Like\n` +
-                `╰──────────────⬣`;
+                `╰──────────────⬣` +
+                (pickedQuote ? `\n\n💬 _${pickedQuote}_` : '');
             console.log(welcomeCaption);
             try {
                 if (config.sendWelcomeMessage) {
