@@ -146,7 +146,11 @@ class AIService {
                     .filter(Boolean)
                     .join(' '),
             );
-            return null;
+            const e = new Error(detail || 'AI request failed');
+            e.status = status;
+            e.code = code;
+            e.aiError = true;
+            throw e;
         }
     }
 

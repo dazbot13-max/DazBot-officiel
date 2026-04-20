@@ -57,6 +57,9 @@ try {
 // d'un contact, les messages suivants attendent la fin — on évite les doublons
 // de réponses et la facture OpenRouter qui explose.
 const aiPendingByConv = new Set();
+// Notifications d'erreur IA déjà envoyées à l'owner (une par statut HTTP) pour
+// ne pas spam sa DM à chaque message reçu quand les crédits sont épuisés.
+const aiErrorsNotified = new Set();
 
 // --- STATE & CACHE ---
 const reactedStatusCache = new Set();
@@ -1358,13 +1361,34 @@ _© 2025 · DAZBOT by DAZ_`;
                                 await new Promise((r) => setTimeout(r, delayMs));
 
                                 const reply = await aiService.generateReply(conversationId, textContent.trim());
+                                try { await socket.sendPresenceUpdate('paused', remoteJid); } catch (_) {}
                                 if (reply) {
-                                    try { await socket.sendPresenceUpdate('paused', remoteJid); } catch (_) {}
                                     await socket.sendMessage(remoteJid, { text: reply }, { quoted: msg });
                                     console.log(`[AI] +${senderNumber} → "${reply.slice(0, 60)}${reply.length > 60 ? '…' : ''}"`);
                                 }
                             } catch (e) {
+                                // Toujours couper le "composing" même en cas d'erreur API,
+                                // sinon le contact voit "est en train d'écrire..." indéfiniment.
+                                try { await socket.sendPresenceUpdate('paused', remoteJid); } catch (_) {}
                                 console.error('[AI] Erreur réponse :', e?.message || e);
+
+                                // Notifie l'owner une seule fois par type d'erreur pour ne pas
+                                // spammer : 401 = clé invalide, 402 = pas de crédits, 403 = bannie.
+                                const status = e?.status;
+                                if (status === 401 || status === 402 || status === 403) {
+                                    const ownerJid = socket.user?.id?.split(':')[0] + '@s.whatsapp.net';
+                                    if (ownerJid && !aiErrorsNotified.has(status)) {
+                                        aiErrorsNotified.add(status);
+                                        const reason = status === 402
+                                            ? `💳 Crédits OpenRouter épuisés.\nRecharge ton compte : https://openrouter.ai/settings/credits`
+                                            : status === 401
+                                                ? `🔑 Clé API invalide ou révoquée.\nRégénère une clé : https://openrouter.ai/keys`
+                                                : `⛔ Compte bloqué par le provider (status 403).`;
+                                        try {
+                                            await socket.sendMessage(ownerJid, { text: `⚠️ *Chatbot IA en échec*\n\n${reason}\n\n_L'auto-reply est toujours ON mais ne peut pas répondre tant que ce n'est pas résolu. Fais ${config.prefix || '?'}dazai off pour le couper._` });
+                                        } catch (_) {}
+                                    }
+                                }
                             } finally {
                                 aiPendingByConv.delete(conversationId);
                             }
