@@ -51,16 +51,101 @@ function envKeyForProvider(providerName) {
     switch ((providerName || '').toLowerCase()) {
         case 'openai': return 'OPENAI_API_KEY';
         case 'openrouter': return 'OPENROUTER_API_KEY';
+        case 'groq': return 'GROQ_API_KEY';
+        case 'cerebras': return 'CEREBRAS_API_KEY';
         default: return 'GEMINI_API_KEY'; // gemini par défaut
     }
 }
 
-let aiService = null;
-try {
-    aiService = new AIService(config);
-    console.log(`[AI] Service prêt (provider=${aiService.provider}, model=${aiService._currentModel()}, autoReply=${config.aiAutoReply ? 'ON' : 'OFF'}).`);
-} catch (e) {
-    console.log(`[AI] Service non initialisé: ${e.message}. Renseigne ${envKeyForProvider(config.aiProvider)} dans .env puis redémarre pour activer ?dazai.`);
+const SUPPORTED_PROVIDERS = ['gemini', 'groq', 'cerebras', 'openrouter', 'openai'];
+
+// --- AI POOL + AUTO-FALLBACK ---
+// Historique conversationnel partagé entre tous les providers : quand on
+// bascule de gemini → groq → cerebras pour un même message, le nouveau
+// provider voit le même contexte que l'ancien (sinon on perdrait le fil).
+const aiSharedHistory = new Map();
+
+// Pool de providers initialisés (provider name → AIService). On instancie
+// paresseusement : seulement les providers dont la clé est dans .env.
+const aiPool = new Map();
+
+function initProvider(providerName) {
+    const name = (providerName || '').toLowerCase();
+    if (aiPool.has(name)) return aiPool.get(name);
+    try {
+        const svc = new AIService(
+            { ...config, aiProvider: name, aiModel: '' },
+            { sharedHistory: aiSharedHistory },
+        );
+        aiPool.set(name, svc);
+        return svc;
+    } catch (e) {
+        return null;
+    }
+}
+
+// `aiService` = provider primaire (utilisé pour ?dazai stats / clear /
+// affichage courant). Reste pointé sur config.aiProvider par défaut.
+let aiService = initProvider(config.aiProvider);
+
+// `aiChain` = ordre d'essai. Tous les providers dont la clé est présente
+// dans l'env rentrent automatiquement, primaire en tête.
+// Priorité intelligente (gratuits d'abord) : primaire → gemini → groq →
+// cerebras → openrouter → openai.
+function buildDefaultChain() {
+    const primary = (config.aiProvider || '').toLowerCase();
+    const prio = ['gemini', 'groq', 'cerebras', 'openrouter', 'openai'];
+    const ordered = [primary, ...prio.filter((p) => p !== primary)];
+    return ordered.filter((p) => initProvider(p) !== null);
+}
+
+let aiChain = buildDefaultChain();
+
+if (aiService) {
+    const extras = aiChain.filter((p) => p !== aiService.provider);
+    console.log(`[AI] Service prêt (primaire=${aiService.provider}, model=${aiService._currentModel()}, autoReply=${config.aiAutoReply ? 'ON' : 'OFF'}).`);
+    if (extras.length) {
+        console.log(`[AI] Fallback chain: ${aiChain.join(' → ')}`);
+    } else {
+        console.log(`[AI] Fallback chain: aucun (ajoute d'autres clés .env pour activer la bascule auto).`);
+    }
+} else {
+    console.log(`[AI] Service non initialisé: aucune clé API détectée pour ${config.aiProvider}. Renseigne ${envKeyForProvider(config.aiProvider)} dans .env puis redémarre pour activer ?dazai.`);
+}
+
+// Bascule systématiquement sur le provider suivant dès qu'une erreur HTTP
+// remonte (quota 429, crédits 402, clé révoquée 401/403, modèle rejeté 400,
+// surcharge 5xx, …). L'intention : zéro message bloqué tant qu'au moins un
+// provider du pool répond. Si notre propre payload est en cause (bug 400
+// reproductible partout), tous les providers échoueront et on notifiera
+// l'owner à la fin — même comportement qu'avant, en un peu plus verbeux côté
+// logs. Mieux vaut ça que rater un switch gratuit.
+const AI_FALLBACK_STATUSES = new Set([400, 401, 402, 403, 404, 408, 409, 413, 422, 429, 500, 502, 503, 504]);
+async function aiGenerateWithFallback(conversationId, text) {
+    if (!aiChain.length) throw new Error('Aucun provider IA disponible.');
+    let lastErr = null;
+    for (let i = 0; i < aiChain.length; i++) {
+        const providerName = aiChain[i];
+        const svc = initProvider(providerName);
+        if (!svc) continue;
+        try {
+            const reply = await svc.generateReply(conversationId, text);
+            if (i > 0) {
+                console.log(`[AI] Fallback réussi : ${aiChain[0]} → ${providerName}.`);
+            }
+            return { reply, provider: providerName };
+        } catch (err) {
+            lastErr = err;
+            const status = err?.status;
+            const hasNext = i < aiChain.length - 1;
+            if (hasNext && AI_FALLBACK_STATUSES.has(status)) {
+                console.log(`[AI] ${providerName} a échoué (status ${status}), bascule sur ${aiChain[i + 1]}...`);
+                continue;
+            }
+            throw err;
+        }
+    }
+    throw lastErr || new Error('Tous les providers IA ont échoué.');
 }
 
 // Throttle des requêtes IA par conversation : si le bot traite déjà un message
@@ -1204,6 +1289,58 @@ async function connectToWhatsApp() {
                             aiService.reloadPersonality();
                             await socket.sendMessage(targetChat, { text: `🔄 Personnalité rechargée depuis personality.json.` }, { quoted: msg });
                         }
+                    } else if (arg === 'provider') {
+                        // ?dazai provider             → affiche primaire + chaîne
+                        // ?dazai provider <nom>       → bascule le primaire
+                        const target = (textLower.split(/\s+/)[2] || '').trim();
+                        if (!target) {
+                            const available = SUPPORTED_PROVIDERS.map(p => {
+                                const ok = initProvider(p) !== null;
+                                const mark = p === (aiService && aiService.provider) ? ' ⭐' : '';
+                                return `  ${ok ? '🟢' : '⚪'} ${p}${mark}${ok ? '' : `  (clé ${envKeyForProvider(p)} absente)`}`;
+                            }).join('\n');
+                            await socket.sendMessage(targetChat, { text: `🤖 *Provider IA*\n\nPrimaire : *${aiService ? aiService.provider : '(aucun)'}*\nChaîne fallback : ${aiChain.join(' → ') || '(vide)'}\n\n*Disponibles :*\n${available}\n\n_Usage :_ ${currentPrefix}dazai provider <nom>` }, { quoted: msg });
+                        } else if (!SUPPORTED_PROVIDERS.includes(target)) {
+                            await socket.sendMessage(targetChat, { text: `❌ Provider inconnu : \`${target}\`.\nValides : ${SUPPORTED_PROVIDERS.join(', ')}.` }, { quoted: msg });
+                        } else {
+                            const svc = initProvider(target);
+                            if (!svc) {
+                                await socket.sendMessage(targetChat, { text: `❌ Provider ${target} non disponible — renseigne ${envKeyForProvider(target)} dans .env puis redémarre.` }, { quoted: msg });
+                            } else {
+                                config.aiProvider = target;
+                                config.aiModel = '';
+                                aiService = svc;
+                                aiChain = buildDefaultChain();
+                                aiErrorsNotified.clear();
+                                await socket.sendMessage(targetChat, { text: `✅ Provider primaire → *${target}* (${svc._currentModel()})\nChaîne fallback : ${aiChain.join(' → ')}` }, { quoted: msg });
+                            }
+                        }
+                    } else if (arg === 'chain') {
+                        // ?dazai chain                       → affiche la chaîne
+                        // ?dazai chain gemini groq cerebras  → fixe la chaîne
+                        // ?dazai chain reset                 → reconstruit la chaîne auto
+                        const parts = textLower.split(/\s+/).slice(2).filter(Boolean);
+                        if (!parts.length) {
+                            await socket.sendMessage(targetChat, { text: `🔗 *Chaîne fallback*\n${aiChain.length ? aiChain.map((p, i) => `${i + 1}. ${p}`).join('\n') : '_(vide)_'}\n\n_Usage :_\n- ${currentPrefix}dazai chain <p1> <p2>...   (ex: ${currentPrefix}dazai chain gemini groq cerebras)\n- ${currentPrefix}dazai chain reset` }, { quoted: msg });
+                        } else if (parts.length === 1 && parts[0] === 'reset') {
+                            aiChain = buildDefaultChain();
+                            await socket.sendMessage(targetChat, { text: `🔗 Chaîne réinitialisée : ${aiChain.join(' → ') || '(vide)'}` }, { quoted: msg });
+                        } else {
+                            const invalid = parts.filter(p => !SUPPORTED_PROVIDERS.includes(p));
+                            if (invalid.length) {
+                                await socket.sendMessage(targetChat, { text: `❌ Providers inconnus : ${invalid.join(', ')}.\nValides : ${SUPPORTED_PROVIDERS.join(', ')}.` }, { quoted: msg });
+                            } else {
+                                const usable = parts.filter(p => initProvider(p) !== null);
+                                const missing = parts.filter(p => initProvider(p) === null);
+                                if (!usable.length) {
+                                    await socket.sendMessage(targetChat, { text: `❌ Aucun des providers listés n'a de clé dans .env.` }, { quoted: msg });
+                                } else {
+                                    aiChain = usable;
+                                    const warn = missing.length ? `\n⚠️ Ignorés (pas de clé) : ${missing.join(', ')}` : '';
+                                    await socket.sendMessage(targetChat, { text: `🔗 Chaîne fallback → ${aiChain.join(' → ')}${warn}` }, { quoted: msg });
+                                }
+                            }
+                        }
                     } else if (arg === 'allow' || arg === 'block') {
                         // ?dazai allow add|remove|list|clear [numéro]
                         // ?dazai block add|remove|list|clear [numéro]
@@ -1236,9 +1373,10 @@ async function connectToWhatsApp() {
                         const providerInfo = aiService
                             ? `🟢 init (${aiService.provider} / ${aiService._currentModel()})`
                             : `🔴 non init — ajoute ${envKeyForProvider(config.aiProvider)}`;
+                        const chainInfo = aiChain.length ? aiChain.join(' → ') : '(vide)';
                         const allowList = (config.aiAllowedNumbers || []).map(n => '+' + n).join(', ') || '(tous)';
                         const blockList = (config.aiBlockedNumbers || []).map(n => '+' + n).join(', ') || '(aucun)';
-                        await socket.sendMessage(targetChat, { text: `🤖 *Chatbot IA DazBot*\n\n- Service : ${providerInfo}\n- Auto-reply : ${config.aiAutoReply ? '🟢 ON' : '🔴 OFF'}\n- Whitelist : ${allowList}\n- Blacklist : ${blockList}\n\n*Commandes*\n- ${currentPrefix}dazai on / off\n- ${currentPrefix}dazai stats\n- ${currentPrefix}dazai clear           (cette conversation)\n- ${currentPrefix}dazai clear all       (toutes)\n- ${currentPrefix}dazai model <nom>\n- ${currentPrefix}dazai reload           (recharge personality.json)\n- ${currentPrefix}dazai allow add/remove/list/clear <numéro>   _(restreindre à certains contacts)_\n- ${currentPrefix}dazai block add/remove/list/clear <numéro>   _(ignorer certains contacts)_` }, { quoted: msg });
+                        await socket.sendMessage(targetChat, { text: `🤖 *Chatbot IA DazBot*\n\n- Service : ${providerInfo}\n- Fallback auto : ${chainInfo}\n- Auto-reply : ${config.aiAutoReply ? '🟢 ON' : '🔴 OFF'}\n- Whitelist : ${allowList}\n- Blacklist : ${blockList}\n\n*Commandes*\n- ${currentPrefix}dazai on / off\n- ${currentPrefix}dazai stats\n- ${currentPrefix}dazai clear           (cette conversation)\n- ${currentPrefix}dazai clear all       (toutes)\n- ${currentPrefix}dazai model <nom>\n- ${currentPrefix}dazai provider [nom]  _(gemini/groq/cerebras/openrouter/openai)_\n- ${currentPrefix}dazai chain <p1 p2..|reset>   _(ordre de fallback)_\n- ${currentPrefix}dazai reload           (recharge personality.json)\n- ${currentPrefix}dazai allow add/remove/list/clear <numéro>   _(restreindre à certains contacts)_\n- ${currentPrefix}dazai block add/remove/list/clear <numéro>   _(ignorer certains contacts)_` }, { quoted: msg });
                     }
                 } else if (cmd === 'menu' || cmd === 'help' || cmd === 'h' || cmd === 'guide') {
                     const p = currentPrefix;
@@ -1417,11 +1555,12 @@ _© 2025 · DAZBOT by DAZ_`;
                                 const delayMs = Math.round(clamped * factor);
                                 await new Promise((r) => setTimeout(r, delayMs));
 
-                                const reply = await aiService.generateReply(conversationId, textContent.trim());
+                                const { reply, provider: usedProvider } = await aiGenerateWithFallback(conversationId, textContent.trim());
                                 try { await socket.sendPresenceUpdate('paused', remoteJid); } catch (_) {}
                                 if (reply) {
                                     await socket.sendMessage(remoteJid, { text: reply }, { quoted: msg });
-                                    console.log(`[AI] +${senderNumber} → "${reply.slice(0, 60)}${reply.length > 60 ? '…' : ''}"`);
+                                    const via = usedProvider !== aiChain[0] ? ` [via ${usedProvider}]` : '';
+                                    console.log(`[AI] +${senderNumber}${via} → "${reply.slice(0, 60)}${reply.length > 60 ? '…' : ''}"`);
                                 }
                             } catch (e) {
                                 // Toujours couper le "composing" même en cas d'erreur API,
@@ -1441,6 +1580,8 @@ _© 2025 · DAZBOT by DAZ_`;
                                         const provider = aiService.provider;
                                         const urls = {
                                             gemini:     { keys: 'https://aistudio.google.com/apikey',               billing: 'https://ai.google.dev/pricing' },
+                                            groq:       { keys: 'https://console.groq.com/keys',                    billing: 'https://console.groq.com/settings/billing' },
+                                            cerebras:   { keys: 'https://cloud.cerebras.ai/',                       billing: 'https://cloud.cerebras.ai/' },
                                             openrouter: { keys: 'https://openrouter.ai/keys',                       billing: 'https://openrouter.ai/settings/credits' },
                                             openai:     { keys: 'https://platform.openai.com/api-keys',             billing: 'https://platform.openai.com/settings/organization/billing' },
                                         }[provider] || { keys: '(doc provider)', billing: '(doc provider)' };

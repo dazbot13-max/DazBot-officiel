@@ -37,9 +37,15 @@ function loadPersonality() {
 }
 
 class AIService {
-    constructor(config) {
+    // opts.sharedHistory : Map partagée entre instances (permet de conserver
+    // le contexte conversationnel quand on bascule sur un provider de fallback).
+    constructor(config, opts = {}) {
         this.config = config;
-        const provider = (config.aiProvider || 'openrouter').toLowerCase();
+        this._sharedHistory = opts.sharedHistory || null;
+        // Défaut = 'gemini' pour rester cohérent avec envKeyForProvider() côté
+        // index.js (message d'erreur qui dit "ajoute GEMINI_API_KEY"). Avant
+        // c'était 'openrouter' → incohérence signalée par Devin Review.
+        const provider = (config.aiProvider || 'gemini').toLowerCase();
 
         if (provider === 'gemini') {
             const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
@@ -54,6 +60,26 @@ class AIService {
                 || 'https://generativelanguage.googleapis.com/v1beta/openai';
             this.extraHeaders = {};
             this.provider = 'gemini';
+        } else if (provider === 'groq') {
+            const apiKey = process.env.GROQ_API_KEY;
+            if (!apiKey) {
+                throw new Error('GROQ_API_KEY manquante dans l\'environnement.');
+            }
+            this.apiKey = apiKey;
+            // Groq expose un endpoint OpenAI-compat : /openai/v1/chat/completions
+            this.baseURL = process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1';
+            this.extraHeaders = {};
+            this.provider = 'groq';
+        } else if (provider === 'cerebras') {
+            const apiKey = process.env.CEREBRAS_API_KEY;
+            if (!apiKey) {
+                throw new Error('CEREBRAS_API_KEY manquante dans l\'environnement.');
+            }
+            this.apiKey = apiKey;
+            // Cerebras expose un endpoint OpenAI-compat : /v1/chat/completions
+            this.baseURL = process.env.CEREBRAS_BASE_URL || 'https://api.cerebras.ai/v1';
+            this.extraHeaders = {};
+            this.provider = 'cerebras';
         } else if (provider === 'openrouter') {
             const apiKey = process.env.OPENROUTER_API_KEY;
             if (!apiKey) {
@@ -82,7 +108,10 @@ class AIService {
         }
 
         // Historique par conversation : Map<conversationId, [{role, content}]>
-        this.history = new Map();
+        // Si un `sharedHistory` a été fourni par le host, on l'utilise pour que
+        // tous les providers d'un pool voient le même contexte → la bascule de
+        // fallback ne casse pas la continuité conversationnelle.
+        this.history = this._sharedHistory || new Map();
         this.personality = loadPersonality();
     }
 
@@ -109,6 +138,8 @@ class AIService {
     _currentModel() {
         if (this.config.aiModel) return this.config.aiModel;
         if (this.provider === 'gemini') return 'gemini-2.5-flash-lite';
+        if (this.provider === 'groq') return 'llama-3.3-70b-versatile';
+        if (this.provider === 'cerebras') return 'llama3.1-8b'; // dispo sur free tier (vérifié via /v1/models)
         if (this.provider === 'openrouter') return 'openai/gpt-4o-mini';
         return 'gpt-4o-mini';
     }
@@ -137,8 +168,10 @@ class AIService {
             max_tokens: 250,
         };
         // presence_penalty / frequency_penalty ne sont pas supportés par
-        // l'endpoint OpenAI-compat de Gemini (renvoie HTTP 400).
-        if (this.provider !== 'gemini') {
+        // l'endpoint OpenAI-compat de Gemini ni par Cerebras (HTTP 400).
+        // Groq les accepte mais on reste défensif : on ne les met que pour
+        // OpenRouter / OpenAI qui les gèrent correctement.
+        if (this.provider === 'openrouter' || this.provider === 'openai') {
             body.presence_penalty = 0.3;
             body.frequency_penalty = 0.3;
         }
