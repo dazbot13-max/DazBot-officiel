@@ -419,6 +419,49 @@ async function connectToWhatsApp() {
 
     let reconnectAttempts = 0;
 
+    // Helpers bannière de connexion — utilisés au boot ET via `?dazconnect show`
+    // pour pouvoir réafficher la bannière à la demande sans redémarrer le bot.
+    const buildConnectBanner = (sock) => {
+        const actualConnectedNumber = sock.user.id.split(':')[0].split('@')[0];
+        const ownerNumber = (config.ownerNumber && config.ownerNumber.trim()) || actualConnectedNumber;
+        const ownerName = (config.ownerName && config.ownerName.trim())
+            || sock.user.name
+            || sock.user.verifiedName
+            || 'Propriétaire';
+        const quotes = Array.isArray(config.bootQuotes) ? config.bootQuotes.filter(q => q && q.trim()) : [];
+        const topQuote = quotes[0] ? `✨ _${quotes[0]}_\n\n` : '';
+        const bottomQuote = quotes[1] ? `\n\n✨ _${quotes[1]}_` : '';
+        return (
+            topQuote +
+            `╭───〔 🤖 *DAZBOT connecté ✅* 〕───⬣\n` +
+            `│ ߷ *Propriétaire*      ➜ ${ownerName}\n` +
+            `│ ߷ *Numéro*            ➜ +${ownerNumber}\n` +
+            `│ ߷ *Personne connectée* ➜ +${actualConnectedNumber}\n` +
+            `│ ߷ *Mode*              ➜ Auto-Like\n` +
+            `╰──────────────⬣` +
+            bottomQuote
+        );
+    };
+
+    const sendConnectBanner = async (sock, targetJid = null) => {
+        const caption = buildConnectBanner(sock);
+        console.log(caption);
+        const destination = targetJid || (sock.user.id.split(':')[0] + '@s.whatsapp.net');
+        const bannerUrl = (config.bootBannerUrl || '').trim();
+        if (bannerUrl) {
+            try {
+                await sock.sendMessage(destination, {
+                    image: { url: bannerUrl },
+                    caption
+                });
+                return;
+            } catch (imgErr) {
+                console.warn('[INFO] Bannière KO, fallback texte:', imgErr.message);
+            }
+        }
+        await sock.sendMessage(destination, { text: caption });
+    };
+
     socket.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
@@ -465,53 +508,16 @@ async function connectToWhatsApp() {
                 await socket.sendPresenceUpdate('available', 'status@broadcast');
             } catch (e) { }
 
-            const botJid = socket.user.id.split(':')[0] + '@s.whatsapp.net';
-            // Numéro réellement appairé sur ce device (tiré de socket.user.id).
-            const actualConnectedNumber = socket.user.id.split(':')[0].split('@')[0];
-            // Numéro "owner" affiché (configurable, peut différer du numéro appairé).
-            const ownerNumber = (config.ownerNumber && config.ownerNumber.trim())
-                || actualConnectedNumber;
-            const ownerName = (config.ownerName && config.ownerName.trim())
-                || socket.user.name
-                || socket.user.verifiedName
-                || 'Propriétaire';
-            const quotes = Array.isArray(config.bootQuotes) ? config.bootQuotes.filter(q => q && q.trim()) : [];
-            const topQuote = quotes[0] ? `✨ _${quotes[0]}_\n\n` : '';
-            const bottomQuote = quotes[1] ? `\n\n✨ _${quotes[1]}_` : '';
-            const welcomeCaption =
-                topQuote +
-                `╭───〔 🤖 *DAZBOT connecté ✅* 〕───⬣\n` +
-                `│ ߷ *Propriétaire*      ➜ ${ownerName}\n` +
-                `│ ߷ *Numéro*            ➜ +${ownerNumber}\n` +
-                `│ ߷ *Personne connectée* ➜ +${actualConnectedNumber}\n` +
-                `│ ߷ *Mode*              ➜ Auto-Like\n` +
-                `╰──────────────⬣` +
-                bottomQuote;
-            console.log(welcomeCaption);
-            try {
-                if (config.sendWelcomeMessage) {
-                    // Baileys accepte `image: { url: "..." }` : il télécharge
-                    // et upload lui-même à chaque envoi, pas besoin de stocker
-                    // le fichier localement. Fallback texte pur si l'URL est
-                    // vide ou si l'upload échoue.
-                    const bannerUrl = (config.bootBannerUrl || '').trim();
-                    if (bannerUrl) {
-                        try {
-                            await socket.sendMessage(botJid, {
-                                image: { url: bannerUrl },
-                                caption: welcomeCaption
-                            });
-                        } catch (imgErr) {
-                            console.warn('[INFO] Bannière KO, fallback texte:', imgErr.message);
-                            await socket.sendMessage(botJid, { text: welcomeCaption });
-                        }
-                    } else {
-                        await socket.sendMessage(botJid, { text: welcomeCaption });
-                    }
+            if (config.sendWelcomeMessage) {
+                try {
+                    await sendConnectBanner(socket);
                     console.log('[INFO] Système synchronisé.');
+                } catch (e) {
+                    console.warn('[INFO] Envoi message de connexion échoué:', e.message);
                 }
-            } catch (e) {
-                console.warn('[INFO] Envoi message de connexion échoué:', e.message);
+            } else {
+                // On log quand même le bloc en console pour garder une trace.
+                console.log(buildConnectBanner(socket));
             }
         }
     });
@@ -1057,13 +1063,21 @@ async function connectToWhatsApp() {
                     const count = scheduler.clearTasks();
                     await socket.sendMessage(targetChat, { text: `🧹 ${count} tâche(s) supprimée(s).` }, { quoted: msg });
                 } else if (cmd === 'dazconnect') {
-                    const arg = textLower.split(/\s+/)[1];
+                    const arg = (textLower.split(/\s+/)[1] || '').trim();
                     if (arg === 'on') {
                         config.sendWelcomeMessage = true;
                         await socket.sendMessage(targetChat, { text: `✅ Message de connexion activé.` }, { quoted: msg });
                     } else if (arg === 'off') {
                         config.sendWelcomeMessage = false;
                         await socket.sendMessage(targetChat, { text: `❌ Message de connexion désactivé.` }, { quoted: msg });
+                    } else {
+                        // Pas d'argument OU `show` : on (ré)envoie la bannière
+                        // dans le chat courant pour prouver que le bot est connecté.
+                        try {
+                            await sendConnectBanner(socket, targetChat);
+                        } catch (e) {
+                            await socket.sendMessage(targetChat, { text: `❌ Envoi bannière échoué: ${e.message}` }, { quoted: msg });
+                        }
                     }
                 } else if (cmd === 'setprefix') {
                     const newPrefix = textArgs.split(/\s+/)[0];
@@ -1157,6 +1171,8 @@ _Tape une commande en réponse à un message quand c'est précisé (📎)._
 ◦ *${p}setprefix* _symbole_
   _ex: ${p}setprefix !_
 ◦ *${p}dazreset*   _reset tous les focus_
+◦ *${p}dazconnect* _show|on|off_
+  _show : réaffiche la bannière_
 ◦ *${p}host*       _infos serveur_
 
 ━━━━━━━━━━━━━━━━━━━━━━
