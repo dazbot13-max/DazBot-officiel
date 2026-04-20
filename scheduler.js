@@ -210,6 +210,10 @@ const _checkTasksInner = async (sock) => {
 
     for (let i = scheduledTasks.length - 1; i >= 0; i--) {
         const task = scheduledTasks[i];
+        // clearTasks() (?planreset) peut vider le tableau pendant un await du
+        // loop → scheduledTasks[i] devient undefined et task.ts crash en
+        // TypeError. Garde défensif obligatoire.
+        if (!task) continue;
         if (typeof task.ts !== 'number') continue;
         if (task.ts > now) continue;
         if (now - task.ts > graceMs && !task.forceRun) {

@@ -1096,7 +1096,8 @@ async function connectToWhatsApp() {
 │ 🛡️ *PROTECTION (AUTO)*
 │ ߷ *${currentPrefix}antidelete [on/off]*
 │ ߷ *${currentPrefix}dazantionly [add/remove/list/off]*
-│ ߷ *${currentPrefix}dazvvonly [add/remove/list/off]*
+│ ߷ *${currentPrefix}dazvv [on/off]*
+│   └ Récup VV globale (toutes sources)
 │
 │ 📅 *PLANIFICATEUR (HH:mm)*
 │ ߷ *${currentPrefix}ps [heure]* (Rép. média/texte)
