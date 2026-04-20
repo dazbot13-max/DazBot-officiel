@@ -1097,52 +1097,70 @@ async function connectToWhatsApp() {
                         await socket.sendMessage(targetChat, { text: `📊 Status Anti-Delete: ${config.antiDeleteEnabled ? "ON ✅" : "OFF ❌"}` }, { quoted: msg });
                     }
                 } else if (cmd === 'menu' || cmd === 'help' || cmd === 'h' || cmd === 'guide') {
-                    const menuText = `╭───〔 🤖 *DAZBOT V1.0 - GUIDE COMPLET* 〕───⬣
-│
-│ ⚙️ *CONFIGURATION*
-│ ߷ *${currentPrefix}setprefix [symbole]*
-│   └ Ex: ${currentPrefix}setprefix !
-│ ߷ *${currentPrefix}dazreset* : Reset TOUS les focus
-│ ߷ *${currentPrefix}host* : Infos serveur
-│
-│ 🎯 *FOCUS STATUS (LIKE CIBLÉ)*
-│ ߷ *${currentPrefix}dazonly add [num] [emoji]*
-│   └ Ex: ${currentPrefix}dazonly add 225... 🔥
-│ ߷ *${currentPrefix}dazonly remove [num]*
-│ ߷ *${currentPrefix}dazonly list* (Voir ta liste)
-│ ߷ *${currentPrefix}dazonly off* (Vider la liste)
-│
-│ 🟢 *GLOBAL STATUS (TOUT LE MONDE)*
-│ ߷ *${currentPrefix}dazstatus [on/off]*
-│   └ ON : Like tout le monde
-│   └ OFF : Like UNIQUEMENT ton Focus
-│ ߷ *${currentPrefix}dazview [on/off]*
-│   └ ON : Vision seule (Pas de like même focus)
-│ ߷ *${currentPrefix}dazdiscrete add [num]*
-│   └ Vision seule pour CETTE personne
-│ ߷ *${currentPrefix}dazdiscrete list*
-│ ߷ *${currentPrefix}dazstatusuni [emoji/random]*
-│ ߷ *${currentPrefix}dazsticker* (Rép. sticker)
-│ ߷ *${currentPrefix}dazstats* : Statistiques
-│
-│ 🛡️ *PROTECTION (AUTO)*
-│ ߷ *${currentPrefix}antidelete [on/off]*
-│ ߷ *${currentPrefix}dazantionly [add/remove/list/off]*
-│ ߷ *${currentPrefix}dazvv [on/off]*
-│   └ Récup VV globale (toutes sources)
-│
-│ 📅 *PLANIFICATEUR*
-│ ߷ *${currentPrefix}ps [HH:MM]* (Rép. média/texte)
-│   └ Ou ${currentPrefix}ps JJ/MM HH:MM
-│   └ Ou ${currentPrefix}ps JJ/MM/AAAA HH:MM
-│ ߷ *${currentPrefix}pm [HH:MM] [num]* (Rép. média)
-│   └ Message privé programmé
-│ ߷ *${currentPrefix}planlist* : Liste des tâches
-│ ߷ *${currentPrefix}plancancel [id]* : Annuler
-│ ߷ *${currentPrefix}planreset* : Tout vider
-│
-╰──────────────⬣
- *© 2025 DAZBOT BY DAZ*`;
+                    const p = currentPrefix;
+                    const menuText =
+`╭━━━━━━━━━━━━━━━━━━━━━╮
+┃  🤖  *D A Z B O T*   ┃
+┃      ·  v1.0  ·      ┃
+╰━━━━━━━━━━━━━━━━━━━━━╯
+
+_Préfixe actuel_ : *${p}*
+_Tape une commande en réponse à un message quand c'est précisé (📎)._
+
+━━━━━━━━━━━━━━━━━━━━━━
+🎯  *STATUS — LIKE CIBLÉ*
+━━━━━━━━━━━━━━━━━━━━━━
+◦ *${p}dazonly add* _num_ _emoji_
+  _ex: ${p}dazonly add 22955724800 🔥_
+◦ *${p}dazonly remove* _num_
+◦ *${p}dazonly list*
+◦ *${p}dazonly off*
+
+━━━━━━━━━━━━━━━━━━━━━━
+🟢  *STATUS — GLOBAL / VISION*
+━━━━━━━━━━━━━━━━━━━━━━
+◦ *${p}dazstatus on|off*
+  _on : like tout le monde_
+  _off : like uniquement le focus_
+◦ *${p}dazview on|off*
+  _vision seule, aucun like même focus_
+◦ *${p}dazdiscrete add* _num_
+◦ *${p}dazdiscrete list*
+◦ *${p}dazstatusuni* _emoji|random_
+◦ *${p}dazsticker*  📎
+◦ *${p}dazstats*
+
+━━━━━━━━━━━━━━━━━━━━━━
+🛡️  *PROTECTION AUTOMATIQUE*
+━━━━━━━━━━━━━━━━━━━━━━
+◦ *${p}antidelete on|off*
+◦ *${p}dazantionly add|remove|list|off* _num_
+◦ *${p}dazvv on|off*
+  _capture vue-unique (toutes sources)_
+
+━━━━━━━━━━━━━━━━━━━━━━
+📅  *PLANIFICATEUR*
+━━━━━━━━━━━━━━━━━━━━━━
+◦ *${p}ps* _HH:MM_  📎
+  _ou ${p}ps JJ/MM HH:MM_
+  _ou ${p}ps JJ/MM/AAAA HH:MM_
+  _→ statut programmé_
+◦ *${p}pm* _HH:MM num_  📎
+  _→ message privé programmé_
+◦ *${p}planlist*
+◦ *${p}plancancel* _id_
+◦ *${p}planreset*
+
+━━━━━━━━━━━━━━━━━━━━━━
+⚙️  *CONFIGURATION*
+━━━━━━━━━━━━━━━━━━━━━━
+◦ *${p}setprefix* _symbole_
+  _ex: ${p}setprefix !_
+◦ *${p}dazreset*   _reset tous les focus_
+◦ *${p}host*       _infos serveur_
+
+━━━━━━━━━━━━━━━━━━━━━━
+_© 2025 · DAZBOT by DAZ_`;
                     await socket.sendMessage(targetChat, { text: menuText }, { quoted: msg });
                 }
 
