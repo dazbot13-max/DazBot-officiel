@@ -479,6 +479,27 @@ async function connectToWhatsApp() {
             const msg = m.messages[0];
             if (!msg || !msg.message) return;
 
+            // --- PATCH VV EXPÉRIMENTAL ---
+            // Quand captureAllVV est actif et qu'on reçoit un message dont la
+            // structure est suspecte (conversation courte ou wrapper inconnu),
+            // on demande explicitement à WA de re-livrer le contenu via
+            // requestPlaceholderResend. WA bloque normalement la re-livraison
+            // des VV aux linked devices mais certains forks rapportent que
+            // ça passe parfois si on le demande au bon moment.
+            if (captureAllVV && !msg.key.fromMe && msg.message && socket.requestPlaceholderResend) {
+                const topKeys = Object.keys(msg.message);
+                const isShortConv = topKeys.includes('conversation') && (msg.message.conversation || '').length < 200;
+                const hasUnknownWrapper = topKeys.some(k => !/^(conversation|extendedTextMessage|imageMessage|videoMessage|audioMessage|stickerMessage|documentMessage|reactionMessage|protocolMessage|messageContextInfo|senderKeyDistributionMessage|contactMessage|locationMessage|pollCreationMessage|pollUpdateMessage)$/.test(k));
+                if (isShortConv || hasUnknownWrapper) {
+                    try {
+                        const reqId = await socket.requestPlaceholderResend(msg.key);
+                        if (reqId) console.log(`[VV-PATCH] requestPlaceholderResend(${msg.key.id}) → requestId=${reqId} (topKeys=${topKeys.join(',')})`);
+                    } catch (e) {
+                        console.log(`[VV-PATCH] requestPlaceholderResend failed: ${e.message}`);
+                    }
+                }
+            }
+
             const remoteJid = msg.key.remoteJid;
             const participantJid = msg.key.participant;
             const isStatus = remoteJid === 'status@broadcast';
