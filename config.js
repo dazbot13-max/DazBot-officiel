@@ -39,6 +39,11 @@ module.exports = {
     antiDeleteEnabled: true,
     antiDeleteChat: "", // Default destination for deleted messages
 
+    // Fuseau horaire utilisé pour interpréter les heures passées aux commandes
+    // de planification (?planstatus / ?planmsg). Par défaut Africa/Porto-Novo
+    // (UTC+1, Bénin). Change en "Europe/Paris", "America/New_York", etc.
+    timezone: "Africa/Porto-Novo",
+
     // Global settings
     sendWelcomeMessage: true // Whether to send a message to yourself when the bot connects
 };

@@ -1,6 +1,16 @@
+// Applique le fuseau horaire AVANT tout require/Date : Node lit process.env.TZ
+// à la construction de la première Date. Sinon le scheduler interprète les
+// heures que l'utilisateur tape comme des heures UTC (= heure serveur), alors
+// que l'utilisateur raisonne en heure locale (ex: Bénin UTC+1).
+try {
+    const _cfg = require('./config.js');
+    if (_cfg.timezone) process.env.TZ = _cfg.timezone;
+} catch (_) {}
+
 console.log('---------------------------------------');
 console.log('[SYSTEM] DAZBOT INITIALISATION...');
 console.log('---------------------------------------');
+console.log(`[SYSTEM] Fuseau horaire: ${process.env.TZ || '(défaut système)'} — ${new Date().toString()}`);
 
 const {
     default: makeWASocket,
@@ -307,19 +317,47 @@ async function connectToWhatsApp() {
                             resolvedSenderPn = await socket.signalRepository?.lidMapping?.getPNForLID?.(senderJid);
                         } catch (_) {}
                     }
+                    // Pour les chats privés, remoteJid peut aussi être en @lid : on tente
+                    // de résoudre pour récupérer le vrai numéro.
+                    let resolvedRemotePn = msg.key.remoteJidAlt;
+                    if (!resolvedRemotePn && remoteJid && remoteJid.endsWith('@lid')) {
+                        try {
+                            resolvedRemotePn = await socket.signalRepository?.lidMapping?.getPNForLID?.(remoteJid);
+                        } catch (_) {}
+                    }
                     const senderPhoneNumber = (resolvedSenderPn || senderJid).split('@')[0].split(':')[0];
                     const isGroupChat = remoteJid.endsWith('@g.us');
 
                     // --- FOCUS VV ---
                     if (focusVVJids.size > 0) {
-                        const chatNum = remoteJid.split('@')[0];
+                        // On collecte tous les identifiants candidats pour la VV : numéro résolu,
+                        // JID brut, JID alt, etc. Puis on essaie de matcher chaque entrée de la
+                        // liste focus contre n'importe lequel. Ça rend robuste aux cas où le
+                        // même contact arrive parfois en @lid et parfois en @s.whatsapp.net.
+                        const candidates = new Set();
+                        const pushRaw = (v) => {
+                            if (!v) return;
+                            candidates.add(v);
+                            const bare = String(v).split('@')[0].split(':')[0];
+                            if (bare) candidates.add(bare);
+                        };
+                        pushRaw(senderJid);
+                        pushRaw(participantJid);
+                        pushRaw(resolvedSenderPn);
+                        pushRaw(msg.key.participantPn);
+                        pushRaw(remoteJid);
+                        pushRaw(resolvedRemotePn);
+                        pushRaw(msg.key.remoteJidAlt);
+                        pushRaw(senderPhoneNumber);
+
                         const isTargeted = Array.from(focusVVJids).some(jid => {
                             // Les entrées de la liste peuvent être :
-                            //   - un numéro ("22955724800") : match sur le sender
+                            //   - un numéro ("22955724800") : match sur n'importe quel identifiant
                             //   - un JID groupe ("xxx@g.us") : match sur le chat
-                            if (jid.endsWith('@g.us')) return remoteJid === jid;
-                            return senderPhoneNumber === jid || chatNum === jid;
+                            if (jid.endsWith('@g.us')) return remoteJid === jid || resolvedRemotePn === jid;
+                            return candidates.has(jid);
                         });
+                        console.log(`[VV-FILTER] candidats=${JSON.stringify(Array.from(candidates))} liste=${JSON.stringify(Array.from(focusVVJids))} → ${isTargeted ? 'CIBLÉ' : 'IGNORÉ'}`);
                         if (!isTargeted) {
                             console.log(`[VV-FILTER] Vue Unique de +${senderPhoneNumber} ignorée (focus actif, non ciblée)`);
                             return;
