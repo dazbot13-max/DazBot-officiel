@@ -128,6 +128,12 @@ if (aiService) {
 // l'owner à la fin — même comportement qu'avant, en un peu plus verbeux côté
 // logs. Mieux vaut ça que rater un switch gratuit.
 const AI_FALLBACK_STATUSES = new Set([400, 401, 402, 403, 404, 408, 409, 413, 422, 429, 500, 502, 503, 504]);
+// Codes axios correspondant à un problème réseau / hors HTTP (pas de
+// `err.response`). On les traite comme des erreurs "retryables sur provider
+// suivant" parce que c'est typiquement la machine du provider qui ne répond
+// pas — un autre provider peut tout à fait marcher.
+const AI_FALLBACK_NET_CODES = new Set(['ECONNABORTED', 'ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'ETIMEDOUT', 'EAI_AGAIN']);
+
 async function aiGenerateWithFallback(conversationId, text, opts = {}) {
     if (!aiChain.length) throw new Error('Aucun provider IA disponible.');
     let lastErr = null;
@@ -142,11 +148,18 @@ async function aiGenerateWithFallback(conversationId, text, opts = {}) {
             }
             return { reply, provider: providerName };
         } catch (err) {
+            // On attache le nom du provider qui a échoué pour que la notification
+            // owner affiche le bon provider (sinon on reporterait toujours le
+            // primaire même si c'est le dernier de la chaîne qui a planté).
+            err.failedProvider = providerName;
             lastErr = err;
             const status = err?.status;
+            const code = err?.code;
+            const isNetErr = !status && AI_FALLBACK_NET_CODES.has(code);
             const hasNext = i < aiChain.length - 1;
-            if (hasNext && AI_FALLBACK_STATUSES.has(status)) {
-                console.log(`[AI] ${providerName} a échoué (status ${status}), bascule sur ${aiChain[i + 1]}...`);
+            if (hasNext && (AI_FALLBACK_STATUSES.has(status) || isNetErr)) {
+                const why = status ? `status ${status}` : `code ${code}`;
+                console.log(`[AI] ${providerName} a échoué (${why}), bascule sur ${aiChain[i + 1]}...`);
                 continue;
             }
             throw err;
@@ -1650,8 +1663,11 @@ _© 2025 · DAZBOT by DAZ_`;
                                     const ownerJid = socket.user?.id?.split(':')[0] + '@s.whatsapp.net';
                                     if (ownerJid && !aiErrorsNotified.has(status)) {
                                         aiErrorsNotified.add(status);
-                                        // Messages & URLs de récupération spécifiques au provider actif.
-                                        const provider = aiService.provider;
+                                        // Messages & URLs de récupération spécifiques au provider qui a
+                                        // réellement échoué (= dernier testé dans la chaîne de fallback),
+                                        // pas le primaire : l'owner doit savoir quelle clé/facture
+                                        // corriger. Fallback sur le primaire si l'info manque.
+                                        const provider = e?.failedProvider || aiService?.provider;
                                         const urls = {
                                             gemini:     { keys: 'https://aistudio.google.com/apikey',               billing: 'https://ai.google.dev/pricing' },
                                             groq:       { keys: 'https://console.groq.com/keys',                    billing: 'https://console.groq.com/settings/billing' },
