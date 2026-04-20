@@ -460,17 +460,37 @@ async function connectToWhatsApp() {
             } catch (e) { }
 
             const botJid = socket.user.id.split(':')[0] + '@s.whatsapp.net';
-            const welcomeMsg = `╭───〔 🤖 *DAZBOT* 〕───⬣\n` +
-                `│ ߷ *Etat*       ➜ Connecté ✅\n` +
-                `│ ߷ *Mode*       ➜ Auto-Like\n` +
+            const ownerNumber = socket.user.id.split(':')[0].split('@')[0];
+            const ownerName = (config.ownerName && config.ownerName.trim())
+                || socket.user.name
+                || socket.user.verifiedName
+                || 'Propriétaire';
+            const welcomeCaption = `╭───〔 🤖 *DAZBOT* 〕───⬣\n` +
+                `│ ߷ *Etat*          ➜ Connecté ✅\n` +
+                `│ ߷ *Propriétaire*  ➜ ${ownerName}\n` +
+                `│ ߷ *Numéro*        ➜ +${ownerNumber}\n` +
+                `│ ߷ *Mode*          ➜ Auto-Like\n` +
                 `╰──────────────⬣`;
-            console.log(welcomeMsg);
+            console.log(welcomeCaption);
             try {
                 if (config.sendWelcomeMessage) {
-                    await socket.sendMessage(botJid, { text: welcomeMsg });
+                    // Envoie d'abord la bannière (avec le texte en légende pour
+                    // que l'image + le message restent groupés côté UI mobile),
+                    // avec un fallback texte pur si l'image est introuvable.
+                    const bannerPath = path.join(__dirname, 'assets', 'boot_banner.png');
+                    if (fs.existsSync(bannerPath)) {
+                        await socket.sendMessage(botJid, {
+                            image: fs.readFileSync(bannerPath),
+                            caption: welcomeCaption
+                        });
+                    } else {
+                        await socket.sendMessage(botJid, { text: welcomeCaption });
+                    }
                     console.log('[INFO] Système synchronisé.');
                 }
-            } catch (e) { }
+            } catch (e) {
+                console.warn('[INFO] Envoi message de connexion échoué:', e.message);
+            }
         }
     });
 
