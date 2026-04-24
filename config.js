@@ -92,8 +92,8 @@ module.exports = {
     aiModel: "gemini-2.5-flash-lite",
     aiMaxContextMessages: 10,           // mémoire courte par contact
     aiRespondToGroups: false,           // true = répond aussi dans les groupes
-    aiTypingDelayMsMin: 1000,           // délai min "typing" avant réponse
-    aiTypingDelayMsMax: 4000,           // délai max (clampé, ~40ms/char)
+    aiTypingDelayMsMin: 2500,           // délai min "typing" avant réponse
+    aiTypingDelayMsMax: 8000,           // délai max (clampé, ~40ms/char)
     // Si non vide, le bot ne répond IA qu'à ces numéros (sans '+', ex "22955724800")
     aiAllowedNumbers: [],
     // Numéros à IGNORER même si autoReply est ON.
