@@ -345,16 +345,37 @@ const handleUpsert = async (sock, m) => {
  * alors à jour le cache pour que, si ce message est ensuite supprimé, on
  * ait quand même le texte/media.
  */
+// Reconnaît un contenu placeholder du type `[senderKeyDistributionMessage]` ou
+// `[ciphertext]` : c'est la forme que prend un message avant décryptage réel,
+// et qu'on peut « upgrader » quand le vrai message arrive via messages.update.
+const PLACEHOLDER_CONTENT_RE = /^\[[A-Za-z]+\]$/;
+
 const handleRetryUpdate = async (sock, updates) => {
     for (const u of updates) {
         if (!u.update?.message || !u.key?.id) continue;
+
         const existing = messageCache.get(u.key.id);
-        if (!existing || existing.content) continue; // seulement si pas déjà du contenu
+
+        // On traite 3 cas légitimes :
+        //  a) aucun cache (le 1er upsert était un senderKeyDistributionMessage
+        //     rejeté) → on extrait maintenant le vrai contenu décrypté ;
+        //  b) cache avec contenu placeholder `[type]` → on l'écrase avec le
+        //     contenu réel ;
+        //  c) cache avec contenu réel → on skip (rien à upgrader).
+        if (existing && existing.content && !PLACEHOLDER_CONTENT_RE.test(existing.content)) {
+            continue;
+        }
+
         try {
-            // On fabrique un faux "msg" minimal et on délègue à handleUpsert
-            // qui va ré-extraire contenu + média depuis le message fraîchement
-            // décrypté. Il écrasera l'ancien cache (mauvais) par le bon.
-            const fake = { messages: [{ key: u.key, message: u.update.message, messageTimestamp: existing.timestamp, pushName: existing.pushName }], type: 'notify' };
+            const fake = {
+                messages: [{
+                    key: u.key,
+                    message: u.update.message,
+                    messageTimestamp: existing?.timestamp || u.update.messageTimestamp || Math.floor(Date.now() / 1000),
+                    pushName: existing?.pushName || u.update.pushName || null,
+                }],
+                type: 'notify',
+            };
             await handleUpsert(sock, fake);
             console.log(`[ANTIDELETE] Cache mis à jour après décryptage retardé (ID: ${u.key.id})`);
         } catch (e) {
