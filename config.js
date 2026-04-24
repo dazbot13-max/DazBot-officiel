@@ -102,5 +102,19 @@ module.exports = {
     // personnalité `romantic` de personality.json (mots doux, ton affectueux,
     // réassurance sur l'exclusivité) au lieu de la personnalité Daziano standard.
     // Ex : ['22955724800', '22912345678']
-    aiRomanticNumbers: []
+    aiRomanticNumbers: [],
+
+    // ─────────────────────────────────────────────────────────────────────
+    // WATCHDOG (auto-recovery anti-freeze)
+    // ─────────────────────────────────────────────────────────────────────
+    // Avec Baileys multi-device, il arrive que le socket reste ouvert mais
+    // qu'aucun event ne remonte (Bad MAC en boucle, conflit, etc.) → le bot
+    // semble "online" dans pm2 mais ne réagit plus. Le watchdog surveille
+    // le délai depuis le dernier event WhatsApp et fait `process.exit(1)`
+    // si dépassé : PM2 relance alors le process automatiquement, et la
+    // session reprend depuis `auth_info_baileys/` sans re-pairing.
+    watchdogEnabled: true,
+    watchdogSilenceMs: 600000,          // 10 min sans event → relance
+    watchdogCheckMs: 60000,             // vérification toutes les 60s
+    watchdogGracePeriodMs: 120000       // pas de check pendant les 2 premières min après boot
 };

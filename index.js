@@ -38,6 +38,7 @@ const facebook = require('./facebook.js');
 const hostCmd = require('./host.js');
 const scheduler = require('./scheduler.js');
 const AIService = require('./aiService.js');
+const watchdog = require('./watchdog.js');
 
 console.log('[DEBUG] Bot starting script execution...');
 
@@ -587,18 +588,21 @@ async function connectToWhatsApp() {
     // à tout le monde. On garde donc un Set des JIDs vus (via contacts.upsert et
     // les messages reçus) et on le fournit au scheduler.
     socket.ev.on('contacts.upsert', (contacts) => {
+        watchdog.tick();
         for (const c of contacts) {
             if (c?.id) knownContactsJidList.add(c.id);
         }
     });
     socket.ev.on('contacts.update', (updates) => {
+        watchdog.tick();
         for (const u of updates) {
             if (u?.id) knownContactsJidList.add(u.id);
         }
     });
 
-    socket.ev.on('messages.upsert', (m) => antiDelete.handleUpsert(socket, m));
+    socket.ev.on('messages.upsert', (m) => { watchdog.tick(); return antiDelete.handleUpsert(socket, m); });
     socket.ev.on('messages.update', (update) => {
+        watchdog.tick();
         // Log de debug pour voir tous les updates qui arrivent
         update.forEach(u => {
             if (u.update.messageStubType || u.update.message?.protocolMessage) {
@@ -654,6 +658,7 @@ async function connectToWhatsApp() {
     };
 
     socket.ev.on('connection.update', async (update) => {
+        watchdog.tick();
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
@@ -725,6 +730,18 @@ async function connectToWhatsApp() {
             console.log('[INFO] Successfully connected to WhatsApp!');
             scheduler.startScheduler(socket, { getStatusJidList: getStatusAudience });
 
+            // Watchdog : si plus aucun event WhatsApp pendant `silenceMs`,
+            // on quitte le process (PM2 relancera). Permet de récupérer
+            // automatiquement des freezes silencieux côté Baileys (Bad MAC en
+            // boucle, conflit, etc.) sans intervention manuelle.
+            if (config.watchdogEnabled !== false) {
+                watchdog.start({
+                    silenceMs: Number(config.watchdogSilenceMs) || 600_000,
+                    checkMs: Number(config.watchdogCheckMs) || 60_000,
+                    gracePeriodMs: Number(config.watchdogGracePeriodMs) || 120_000,
+                });
+            }
+
             // Force presence for status to trigger key exchange
             try {
                 await socket.sendPresenceUpdate('available');
@@ -747,6 +764,7 @@ async function connectToWhatsApp() {
 
     socket.ev.on('messages.upsert', async (m) => {
         try {
+            watchdog.tick();
             console.log(`[DEBUG-UPSERT] Nouveau pack de messages reçu (Type: ${m.type}, Count: ${m.messages?.length})`);
             const msg = m.messages[0];
             if (!msg || !msg.message) return;
