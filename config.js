@@ -63,6 +63,10 @@ module.exports = {
     // messages privés/groupes restent récupérés. Contrôle via `?antidelete
     // statut on|off` depuis WhatsApp.
     antiDeleteStatusEnabled: true,
+    // Groupes (JIDs complets `<id>@g.us`) dont on ignore les suppressions —
+    // utile pour ne pas polluer certaines discussions avec des récups. Géré
+    // depuis WhatsApp via `?antidelete skip add|remove|list|clear <jid>`.
+    antiDeleteSkipGroups: [],
 
     // Fuseau horaire utilisé pour interpréter les heures passées aux commandes
     // de planification (?planstatus / ?planmsg). Par défaut Africa/Porto-Novo

@@ -194,6 +194,13 @@ const reactedStatusCache = new Set();
 const CACHE_MAX_SIZE = 1000;
 const botStartTime = Math.floor(Date.now() / 1000);
 
+// Dernier QR code émis par Baileys (brut) + timestamp ms. Mis à jour dans le
+// handler `connection.update` à chaque qr reçu. Utilisé par `?pair qr` pour
+// régénérer un PNG à la demande depuis WhatsApp même si le bot est encore
+// connecté (utile par ex. pour un nouveau pairing planifié).
+let lastQrString = null;
+let lastQrAt = 0;
+
 let isActivelyLiking = true;
 let fixedEmoji = null;
 let focusTargets = new Map(); // Store JID -> { emoji: string }
@@ -657,6 +664,38 @@ async function connectToWhatsApp() {
             } catch (e) {
                 console.log('[QR-CODE] Installez qrcode-terminal pour afficher le QR dans le terminal, ou utilisez le Pairing Code.');
                 console.log(`[QR-CODE] QR brut : ${qr}`);
+            }
+            // Persiste le QR brut + génère automatiquement un PNG scannable
+            // via l'outil système `qrencode` (doit être installé : `apt-get
+            // install -y qrencode`). Le PNG peut être récupéré ensuite via
+            // la commande `?pair qr` ou par SSH (fichier pairing_qr.png).
+            // Utile quand le terminal n'affiche pas le QR correctement.
+            try {
+                lastQrString = qr;
+                lastQrAt = Date.now();
+                const fs = require('fs');
+                const path = require('path');
+                const rawPath = path.join(__dirname, 'pairing_qr.txt');
+                const pngPath = path.join(__dirname, 'pairing_qr.png');
+                fs.writeFileSync(rawPath, qr);
+                const { spawn } = require('child_process');
+                // `qrencode -o <png> -s 10 -m 3 -t PNG` : -s = taille px, -m = marge.
+                // On passe le QR sur stdin pour éviter les soucis de quoting.
+                const child = spawn('qrencode', ['-o', pngPath, '-s', '10', '-m', '3', '-t', 'PNG'], { stdio: ['pipe', 'ignore', 'pipe'] });
+                child.stdin.write(qr);
+                child.stdin.end();
+                child.on('close', (code) => {
+                    if (code === 0) {
+                        console.log(`[QR-CODE] PNG sauvegardé : ${pngPath} (raw : ${rawPath})`);
+                    } else {
+                        console.warn(`[QR-CODE] qrencode a échoué (code ${code}). Installe qrencode : sudo apt-get install -y qrencode`);
+                    }
+                });
+                child.on('error', (err) => {
+                    console.warn(`[QR-CODE] qrencode introuvable (${err.code}). Installe-le : sudo apt-get install -y qrencode`);
+                });
+            } catch (e) {
+                console.error('[QR-CODE] Erreur sauvegarde QR :', e.message);
             }
         }
 
@@ -1344,10 +1383,168 @@ async function connectToWhatsApp() {
                     await facebook.executeFacebook(socket, msg);
                 } else if (cmd === 'host') {
                     await hostCmd.executeHost(socket, msg, config);
+                } else if (cmd === 'pair') {
+                    // ?pair qr → génère et envoie un PNG du dernier QR de pairing
+                    // disponible. Pratique pour le propriétaire : quand le bot se
+                    // déconnecte et réclame un nouveau pairing, Baileys émet un
+                    // QR toutes les ~20s sur `connection.update`, qu'on persiste
+                    // en `pairing_qr.png` via `qrencode`. Ici on lit ce PNG et on
+                    // l'envoie au chat d'appel. Owner-only pour éviter toute fuite
+                    // de QR à un tiers.
+                    if (!isOwner) {
+                        await socket.sendMessage(targetChat, { text: `🔒 Commande réservée au propriétaire.` }, { quoted: msg });
+                        return;
+                    }
+                    const sub = (textLower.split(/\s+/)[1] || '').trim();
+                    if (sub && sub !== 'qr') {
+                        await socket.sendMessage(targetChat, { text:
+`❓ *Usage :* ${currentPrefix}pair qr
+_Génère un QR code (PNG) pour appairer un nouvel appareil WhatsApp au bot._` }, { quoted: msg });
+                        return;
+                    }
+                    const pngPath = require('path').join(__dirname, 'pairing_qr.png');
+                    const rawPath = require('path').join(__dirname, 'pairing_qr.txt');
+                    const fs = require('fs');
+
+                    // Cas 1 : PNG déjà présent sur disque → on l'envoie directement.
+                    // Avertit l'owner si le QR est vieux (>5 min) car il a pu
+                    // expirer côté WhatsApp (rotation ~20s).
+                    if (fs.existsSync(pngPath)) {
+                        const stat = fs.statSync(pngPath);
+                        const ageSec = Math.floor((Date.now() - stat.mtimeMs) / 1000);
+                        const ageLabel = ageSec < 60 ? `${ageSec}s`
+                            : ageSec < 3600 ? `${Math.floor(ageSec / 60)}min ${ageSec % 60}s`
+                            : `${Math.floor(ageSec / 3600)}h`;
+                        const warn = ageSec > 300
+                            ? `\n\n⚠️ Ce QR a *${ageLabel}* — il a probablement expiré (WhatsApp les tourne toutes les ~20s). Si le scan échoue, attends qu'un nouveau QR soit émis (déconnecte puis ${currentPrefix}pair qr à nouveau).`
+                            : `\n\n⏱️ _QR frais de ${ageLabel}._`;
+                        try {
+                            await socket.sendMessage(targetChat, {
+                                image: fs.readFileSync(pngPath),
+                                caption:
+`📱 *QR Code de pairing WhatsApp*
+
+_Scanne ce QR depuis_ :
+WhatsApp → Paramètres → Appareils liés → Lier un appareil${warn}`,
+                            }, { quoted: msg });
+                        } catch (e) {
+                            await socket.sendMessage(targetChat, { text: `❌ Erreur envoi du PNG : ${e.message}\n\n📁 Fichier : \`${pngPath}\`` }, { quoted: msg });
+                        }
+                        return;
+                    }
+
+                    // Cas 2 : pas de PNG mais on a une string QR en mémoire
+                    // (p.ex. qrencode pas installé ou job async pas fini). On
+                    // tente une régénération synchrone.
+                    if (lastQrString) {
+                        try {
+                            fs.writeFileSync(rawPath, lastQrString);
+                            const { execFileSync } = require('child_process');
+                            execFileSync('qrencode', ['-o', pngPath, '-s', '10', '-m', '3', '-t', 'PNG'], { input: lastQrString });
+                            await socket.sendMessage(targetChat, {
+                                image: fs.readFileSync(pngPath),
+                                caption:
+`📱 *QR Code de pairing WhatsApp* (régénéré)
+
+_Scanne depuis_ : WhatsApp → Paramètres → Appareils liés → Lier un appareil.`,
+                            }, { quoted: msg });
+                        } catch (e) {
+                            await socket.sendMessage(targetChat, { text: `❌ Impossible de générer le PNG : ${e.message}\n\n_Raw QR :_\n\`\`\`${lastQrString.slice(0, 200)}...\`\`\`\n\n_Installe \`qrencode\` sur le serveur :_\n\`sudo apt-get install -y qrencode\`` }, { quoted: msg });
+                        }
+                        return;
+                    }
+
+                    // Cas 3 : pas de QR du tout → le bot est connecté et WA
+                    // n'émet pas de QR tant qu'une session est valide.
+                    await socket.sendMessage(targetChat, { text:
+`ℹ️ *Aucun QR de pairing disponible.*
+
+Le bot est actuellement connecté à WhatsApp — WhatsApp n'émet des QR codes que lorsqu'une nouvelle session est en cours de pairing. Pour forcer la génération :
+
+1. Déconnecte l'appareil actuel (WhatsApp → Appareils liés → Déconnecter).
+2. Le bot redémarrera et émettra un QR dans les secondes qui suivent.
+3. Fait \`${currentPrefix}pair qr\` à nouveau pour recevoir le PNG ici.` }, { quoted: msg });
+                    return;
                 } else if (cmd === 'antidelete') {
                     const parts = textLower.split(/\s+/);
                     const arg = parts[1];
                     const sub = parts[2];
+
+                    // ?antidelete skip add|remove|list|clear <groupJid>
+                    // Gère la skip-list config.antiDeleteSkipGroups (groupes
+                    // dont on ignore les suppressions). On opère en JID brut
+                    // car `<chiffres>@g.us` est sensible à la casse et doit
+                    // matcher exactement cached.chat.
+                    if (arg === 'skip') {
+                        if (!Array.isArray(config.antiDeleteSkipGroups)) {
+                            config.antiDeleteSkipGroups = [];
+                        }
+                        // On relit l'argument "sub" depuis le texte brut pour
+                        // préserver la casse du JID (textLower casserait sinon
+                        // les parties majuscules potentielles — même si @g.us
+                        // est minuscule, défensif pour le futur).
+                        const rawParts = text.split(/\s+/);
+                        const rawJid = (rawParts[3] || '').trim();
+
+                        if (sub === 'add') {
+                            if (!rawJid) {
+                                await socket.sendMessage(targetChat, { text:
+`❓ *Usage :* ${currentPrefix}antidelete skip add <groupJid>
+_Ex :_ ${currentPrefix}antidelete skip add 120363123456789012@g.us
+
+_Astuce : un JID de groupe apparaît dans les rapports anti-delete (\`Chat JID\`) ou peut être récupéré en écrivant \`${currentPrefix}dazconnect show\` dans le groupe concerné._` }, { quoted: msg });
+                                return;
+                            }
+                            const jid = rawJid.endsWith('@g.us') ? rawJid : `${rawJid.replace(/@.*$/, '')}@g.us`;
+                            if (!config.antiDeleteSkipGroups.includes(jid)) {
+                                config.antiDeleteSkipGroups.push(jid);
+                            }
+                            await socket.sendMessage(targetChat, { text: `🙈 Groupe ignoré ajouté : \`${jid}\`\n_Les messages supprimés dans ce groupe ne seront plus récupérés (${config.antiDeleteSkipGroups.length} groupe(s) en skip-list)._` }, { quoted: msg });
+                            return;
+                        }
+                        if (sub === 'remove' || sub === 'rm' || sub === 'del') {
+                            if (!rawJid) {
+                                await socket.sendMessage(targetChat, { text: `❓ Usage : ${currentPrefix}antidelete skip remove <groupJid>` }, { quoted: msg });
+                                return;
+                            }
+                            const jid = rawJid.endsWith('@g.us') ? rawJid : `${rawJid.replace(/@.*$/, '')}@g.us`;
+                            const before = config.antiDeleteSkipGroups.length;
+                            config.antiDeleteSkipGroups = config.antiDeleteSkipGroups.filter(j => j !== jid);
+                            const removed = before - config.antiDeleteSkipGroups.length;
+                            await socket.sendMessage(targetChat, { text: removed
+                                ? `✅ Groupe retiré de la skip-list : \`${jid}\`\n_Les suppressions y seront à nouveau récupérées._`
+                                : `ℹ️ Ce JID n'était pas dans la skip-list.` }, { quoted: msg });
+                            return;
+                        }
+                        if (sub === 'clear' || sub === 'reset') {
+                            const n = config.antiDeleteSkipGroups.length;
+                            config.antiDeleteSkipGroups = [];
+                            await socket.sendMessage(targetChat, { text: `🧹 Skip-list vidée (${n} groupe(s) retiré(s)).` }, { quoted: msg });
+                            return;
+                        }
+                        // list (ou pas d'arg) → affiche la liste
+                        if (!config.antiDeleteSkipGroups.length) {
+                            await socket.sendMessage(targetChat, { text:
+`📋 *Skip-list anti-delete* : vide
+_Aucun groupe ignoré — toutes les suppressions sont récupérées._
+
+_Usage :_
+• ${currentPrefix}antidelete skip add <groupJid>
+• ${currentPrefix}antidelete skip remove <groupJid>
+• ${currentPrefix}antidelete skip list
+• ${currentPrefix}antidelete skip clear` }, { quoted: msg });
+                        } else {
+                            const lines = config.antiDeleteSkipGroups.map((j, i) => `  ${i + 1}. \`${j}\``).join('\n');
+                            await socket.sendMessage(targetChat, { text:
+`🙈 *Groupes ignorés (skip-list)* — ${config.antiDeleteSkipGroups.length}
+
+${lines}
+
+_Retirer :_ ${currentPrefix}antidelete skip remove <jid>
+_Vider :_ ${currentPrefix}antidelete skip clear` }, { quoted: msg });
+                        }
+                        return;
+                    }
 
                     // ?antidelete statut on|off → toggle uniquement la récup
                     // des statuts. Les messages privés/groupes restent inchangés.
@@ -1377,15 +1574,18 @@ async function connectToWhatsApp() {
                         // Pas d'argument ou 'status' → affiche les deux toggles.
                         const msgOn = config.antiDeleteEnabled ? 'ON ✅' : 'OFF ❌';
                         const statOn = (config.antiDeleteStatusEnabled !== false) ? 'ON ✅' : 'OFF ❌';
+                        const skipCount = Array.isArray(config.antiDeleteSkipGroups) ? config.antiDeleteSkipGroups.length : 0;
                         await socket.sendMessage(targetChat, { text:
 `🛡️ *Anti-Delete — état*
 
 • 💬 Messages privés / groupes : *${msgOn}*
 • 📸 Statuts supprimés         : *${statOn}*
+• 🙈 Groupes ignorés           : *${skipCount}*
 
 _Usage :_
 • ${currentPrefix}antidelete on|off           _tout activer / désactiver_
-• ${currentPrefix}antidelete statut on|off    _statuts uniquement_` }, { quoted: msg });
+• ${currentPrefix}antidelete statut on|off    _statuts uniquement_
+• ${currentPrefix}antidelete skip add|remove|list|clear <groupJid>` }, { quoted: msg });
                     }
                 } else if (cmd === 'dazai') {
                     const arg = (textLower.split(/\s+/)[1] || '').trim();
@@ -1788,7 +1988,7 @@ _Usage :_
                     }
                 } else if (cmd === 'menu' || cmd === 'help' || cmd === 'h' || cmd === 'guide') {
                     const p = currentPrefix;
-                    // ── Uptime formaté compact (xd xh xm)
+                    // ── Uptime compact (xj xh xm)
                     const upSec = Math.max(0, Math.floor(Date.now() / 1000) - botStartTime);
                     const ud = Math.floor(upSec / 86400);
                     const uh = Math.floor((upSec % 86400) / 3600);
@@ -1796,84 +1996,108 @@ _Usage :_
                     const uptime = ud ? `${ud}j ${uh}h ${um}m` : uh ? `${uh}h ${um}m` : `${um}m`;
                     const aiDot = aiService && config.aiAutoReply ? '🟢' : aiService ? '🟡' : '🔴';
                     const ownerTag = config.ownerName || 'DAZ';
+                    const senderJid = msg.key.participant || msg.key.remoteJid;
+                    const senderName = senderJid.split('@')[0];
 
-                    const menuText =
-`╭─────────────────────────╮
-│  🤖  *D A Z B O T*   ·   │
-│    _command center v1_    │
-╰─────────────────────────╯
+                    // Même langage visuel que ?tagall : image (banner) + caption,
+                    // bordures `╭───────◇` pour le titre, blocs `╭───〔 … 〕───⬣`
+                    // pour chaque section, pied `> PRODUCED BY DAZBOT`.
+                    const section = (title, lines) =>
+`╭───〔 *${title}* 〕───⬣
+${lines.map(l => `│ ${l}`).join('\n')}
+╰──────────────⬣`;
 
-┌─ ⚙️ *État*
-│   Préfixe  : *${p}*
-│   Uptime   : *${uptime}*
-│   Chatbot  : ${aiDot} *${config.aiAutoReply ? 'ON' : 'OFF'}*
-│   Owner    : *${ownerTag}*
-│
-└─ _📎 = réponds à un message_
+                    const caption =
+`╭───────◇
+│ 🤖 *DAZBOT — MENU* 🤖
+╰───────◇
 
+👤 *Auteur* : @${senderName}
+⏱️ *Uptime* : ${uptime}
+🔣 *Préfixe* : ${p}
+🤖 *Chatbot* : ${aiDot} ${config.aiAutoReply ? 'ON' : 'OFF'}
+👑 *Owner* : ${ownerTag}
 
-🎯  *LIKE CIBLÉ*
- • *${p}dazonly add* _num_ _emoji_
- • *${p}dazonly remove* _num_
- • *${p}dazonly list*
- • *${p}dazonly off*
+${section('LIKE CIBLÉ', [
+    `${p}dazonly add _num_ _emoji_`,
+    `${p}dazonly remove _num_`,
+    `${p}dazonly list`,
+    `${p}dazonly off`,
+])}
 
+${section('STATUS · VISION', [
+    `${p}dazstatus on|off  _like tous_`,
+    `${p}dazview on|off    _vision seule_`,
+    `${p}dazdiscrete add _num_`,
+    `${p}dazdiscrete list`,
+    `${p}dazstatusuni _emoji|random_`,
+    `${p}dazsticker  📎`,
+    `${p}dazstats             _globales_`,
+    `${p}dazstats jour        _aujourd'hui_`,
+    `${p}dazstats semaine     _7 derniers jours_`,
+])}
 
-🟢  *STATUS · VISION*
- • *${p}dazstatus on|off*  _like tous_
- • *${p}dazview on|off*    _vision seule_
- • *${p}dazdiscrete add* _num_
- • *${p}dazdiscrete list*
- • *${p}dazstatusuni* _emoji|random_
- • *${p}dazsticker*  📎
- • *${p}dazstats*                _globales_
- • *${p}dazstats jour*           _aujourd'hui_
- • *${p}dazstats semaine*        _7 derniers jours_
+${section('PROTECTION', [
+    `${p}antidelete             _état_`,
+    `${p}antidelete on|off      _tout_`,
+    `${p}antidelete statut on|off _statuts_`,
+    `${p}antidelete skip add|remove|list|clear`,
+    `${p}dazantionly add _num_`,
+    `${p}dazantionly remove|list|off`,
+    `${p}dazvv on|off  _vue-unique_`,
+])}
 
+${section('PLANIFICATEUR', [
+    `${p}ps _HH:MM_  📎`,
+    `${p}ps _JJ/MM HH:MM_  📎`,
+    `${p}ps _JJ/MM/AAAA HH:MM_  📎`,
+    `${p}pm _HH:MM num_  📎`,
+    `${p}planlist`,
+    `${p}plancancel _id_`,
+    `${p}planreset`,
+])}
 
-🛡️  *PROTECTION*
- • *${p}antidelete*              _voir l'état_
- • *${p}antidelete on|off*       _tout_
- • *${p}antidelete statut on|off*  _statuts seuls_
- • *${p}dazantionly add* _num_
- • *${p}dazantionly remove|list|off*
- • *${p}dazvv on|off*  _vue-unique_
+${section('CHATBOT IA', [
+    `${p}dazai          _dashboard_`,
+    `${p}dazai on|off`,
+    `${p}dazai provider _nom_`,
+    `${p}dazai chain _p1 p2 …_`,
+    `${p}dazai allow|block add|remove|list`,
+    `${p}dazai romantic add|remove|list`,
+    `${p}dazai model _nom_`,
+    `${p}dazai key set/remove/list  🔐`,
+    `${p}dazai reload / clear [all] / stats`,
+])}
 
+${section('CONFIG & SYSTÈME', [
+    `${p}setprefix _symbole_`,
+    `${p}dazconnect show|on|off`,
+    `${p}dazreset   _reset focus_`,
+    `${p}pair qr    _génère un QR PNG_`,
+    `${p}host       _infos serveur_`,
+])}
 
-📅  *PLANIFICATEUR*
- • *${p}ps* _HH:MM_  📎
- • *${p}ps* _JJ/MM HH:MM_  📎
- • *${p}ps* _JJ/MM/AAAA HH:MM_  📎
- • *${p}pm* _HH:MM num_  📎
- • *${p}planlist*
- • *${p}plancancel* _id_
- • *${p}planreset*
+🗒️ _📎 = réponds à un message pour l'attacher._
 
+> PRODUCED BY DAZBOT`;
 
-🤖  *CHATBOT IA*
- • *${p}dazai*            _dashboard_
- • *${p}dazai on|off*
- • *${p}dazai provider* _nom_
- • *${p}dazai chain* _p1 p2 …_
- • *${p}dazai allow* _add|remove|list_
- • *${p}dazai block* _add|remove|list_
- • *${p}dazai romantic* _add|remove|list_
- • *${p}dazai model* _nom_
- • *${p}dazai key* _set/remove/list_  🔐
- • *${p}dazai reload*
- • *${p}dazai clear* [_all_]
- • *${p}dazai stats*
-
-
-⚙️  *CONFIG*
- • *${p}setprefix* _symbole_
- • *${p}dazconnect* _show|on|off_
- • *${p}dazreset*   _reset focus_
- • *${p}host*       _infos serveur_
-
-─────────────────────────
-   _© 2025 · DAZBOT · ${ownerTag}_`;
-                    await socket.sendMessage(targetChat, { text: menuText }, { quoted: msg });
+                    // Envoi avec la bannière configurée (même fallback que
+                    // tagall : si l'image échoue, on retombe sur du texte).
+                    const banner = config.bootBannerUrl;
+                    try {
+                        if (banner) {
+                            await socket.sendMessage(
+                                targetChat,
+                                { image: { url: banner }, caption, mentions: [senderJid] },
+                                { quoted: msg }
+                            );
+                        } else {
+                            await socket.sendMessage(targetChat, { text: caption, mentions: [senderJid] }, { quoted: msg });
+                        }
+                    } catch (imgErr) {
+                        console.error('[MENU] Image send failed, fallback text:', imgErr.message);
+                        await socket.sendMessage(targetChat, { text: caption, mentions: [senderJid] }, { quoted: msg });
+                    }
                 }
 
                 // --- DOWNLOADER COMMANDS ---

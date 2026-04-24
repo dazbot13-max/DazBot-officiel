@@ -58,6 +58,16 @@ const reportRevocation = async (sock, deletedId) => {
             messageCache.delete(deletedId);
             return;
         }
+        // Skip list par groupe : si le chat est un groupe listé dans
+        // config.antiDeleteSkipGroups, on ignore la suppression (utile pour
+        // ne pas polluer les discussions où les gens suppriment souvent).
+        if (cached.chat.endsWith('@g.us')
+                && Array.isArray(config.antiDeleteSkipGroups)
+                && config.antiDeleteSkipGroups.includes(cached.chat)) {
+            console.log(`[ANTIDELETE] Groupe skip-list (ID: ${deletedId}, chat: ${cached.chat}) — récup ignorée.`);
+            messageCache.delete(deletedId);
+            return;
+        }
         // Si focusAntiDeleteJids n'est pas vide, on ne rapporte QUE si le message
         // vient d'une cible (contact ou chat/groupe). On compare contre le JID
         // brut, le numéro extrait du JID brut, ET le PN résolu — ce dernier est
