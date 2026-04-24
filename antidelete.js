@@ -345,10 +345,13 @@ const handleUpsert = async (sock, m) => {
  * alors à jour le cache pour que, si ce message est ensuite supprimé, on
  * ait quand même le texte/media.
  */
-// Reconnaît un contenu placeholder du type `[senderKeyDistributionMessage]` ou
-// `[ciphertext]` : c'est la forme que prend un message avant décryptage réel,
-// et qu'on peut « upgrader » quand le vrai message arrive via messages.update.
-const PLACEHOLDER_CONTENT_RE = /^\[[A-Za-z]+\]$/;
+// Reconnaît un contenu placeholder du type `[ciphertext]`,
+// `[senderKeyDistributionMessage]`, `[messageContextInfo]`, etc. — càd le
+// fallback `[${type}]` de handleUpsert. Les vrais types Baileys sont en
+// camelCase (1ère lettre minuscule) → la regex exige une minuscule en tête
+// pour NE PAS matcher les labels de contenu produits par notre code même
+// (`[Image]`, `[Vocal]`, `[Audio]`, `[Sticker]` — Title case).
+const PLACEHOLDER_CONTENT_RE = /^\[[a-z][A-Za-z]*\]$/;
 
 const handleRetryUpdate = async (sock, updates) => {
     for (const u of updates) {
@@ -359,10 +362,11 @@ const handleRetryUpdate = async (sock, updates) => {
         // On traite 3 cas légitimes :
         //  a) aucun cache (le 1er upsert était un senderKeyDistributionMessage
         //     rejeté) → on extrait maintenant le vrai contenu décrypté ;
-        //  b) cache avec contenu placeholder `[type]` → on l'écrase avec le
-        //     contenu réel ;
-        //  c) cache avec contenu réel → on skip (rien à upgrader).
-        if (existing && existing.content && !PLACEHOLDER_CONTENT_RE.test(existing.content)) {
+        //  b) cache avec contenu placeholder camelCase `[type]` ET pas encore
+        //     de média → on l'écrase avec le contenu réel ;
+        //  c) cache avec contenu réel OU média déjà téléchargé → on skip pour
+        //     ne pas écraser un média valide par une re-download échouée.
+        if (existing && (existing.media || (existing.content && !PLACEHOLDER_CONTENT_RE.test(existing.content)))) {
             continue;
         }
 
