@@ -302,14 +302,43 @@ const getStatusAudience = async () => {
     return Array.from(out);
 };
 
-// Statistiques du bot
+// Statistiques du bot. `daily` = map YYYY-MM-DD (tz config.timezone,
+// par défaut Africa/Porto-Novo = UTC+1) → compteurs du jour.
+// Utilisé par ?dazstats jour / ?dazstats semaine.
 const botStats = {
     statusRead: 0,
     statusReacted: 0,
     deletedRecovered: 0,
     vvRecovered: 0,
-    byUser: {}
+    byUser: {},
+    daily: {}
 };
+
+// Renvoie la clé jour YYYY-MM-DD dans le fuseau configuré. On utilise
+// Intl.DateTimeFormat avec le locale 'en-CA' qui formate naturellement en
+// ISO (YYYY-MM-DD). Si le fuseau est invalide on retombe sur l'UTC.
+function dailyKey(date = new Date(), tz = config.timezone || 'Africa/Porto-Novo') {
+    try {
+        const parts = new Intl.DateTimeFormat('en-CA', {
+            timeZone: tz,
+            year: 'numeric', month: '2-digit', day: '2-digit',
+        }).formatToParts(date);
+        const y = parts.find(p => p.type === 'year').value;
+        const m = parts.find(p => p.type === 'month').value;
+        const d = parts.find(p => p.type === 'day').value;
+        return `${y}-${m}-${d}`;
+    } catch (_) {
+        return date.toISOString().slice(0, 10);
+    }
+}
+
+function bumpDaily(kind) {
+    const key = dailyKey();
+    if (!botStats.daily[key]) {
+        botStats.daily[key] = { statusRead: 0, statusReacted: 0, deletedRecovered: 0, vvRecovered: 0 };
+    }
+    botStats.daily[key][kind] = (botStats.daily[key][kind] || 0) + 1;
+}
 
 // Setup memory cache
 const msgRetryCounterCache = new NodeCache();
@@ -490,6 +519,7 @@ async function connectToWhatsApp() {
     antiDelete.setOnRecovered((phoneNumber) => {
         botStats.deletedRecovered++;
         botStats.byUser[phoneNumber] = (botStats.byUser[phoneNumber] || 0) + 1;
+        bumpDaily('deletedRecovered');
     });
 
     // Handle pairing code
@@ -849,6 +879,7 @@ async function connectToWhatsApp() {
 
                     botStats.vvRecovered++;
                     botStats.byUser[senderPhoneNumber] = (botStats.byUser[senderPhoneNumber] || 0) + 1;
+                    bumpDaily('vvRecovered');
                     console.log(`[VV-CAPTURE] +${senderPhoneNumber} (${sourceLabel}) → envoyé à l'owner`);
                 } catch (e) { console.error("[ERROR] Anti-View-Once failed:", e.message); }
             }
@@ -1074,6 +1105,63 @@ async function connectToWhatsApp() {
                     reactionSticker = buffer;
                     await socket.sendMessage(targetChat, { text: `✅ Sticker enregistré ! Le bot l'utilisera désormais pour réagir aux statuts.` }, { quoted: msg });
                 } else if (cmd === 'dazstats') {
+                    const sub = (textLower.split(/\s+/)[1] || '').trim();
+                    const tz = config.timezone || 'Africa/Porto-Novo';
+
+                    if (sub === 'jour' || sub === 'today' || sub === 'j') {
+                        // Stats d'aujourd'hui (fuseau configuré, par défaut
+                        // Africa/Porto-Novo = UTC+1 Bénin).
+                        const todayKey = dailyKey();
+                        const d = botStats.daily[todayKey] || { statusRead: 0, statusReacted: 0, deletedRecovered: 0, vvRecovered: 0 };
+                        const total = d.statusRead + d.statusReacted + d.deletedRecovered + d.vvRecovered;
+                        const dayMsg = `╭───〔 📅 *STATS DU JOUR* 〕───⬣\n` +
+                            `│ Date : *${todayKey}* _(tz ${tz})_\n` +
+                            `│\n` +
+                            `│ 👀 Statuts vus      : ${d.statusRead}\n` +
+                            `│ ❤️ Statuts likés     : ${d.statusReacted}\n` +
+                            `│ 🛡️ Msg récupérés     : ${d.deletedRecovered}\n` +
+                            `│ 👁️ Vues uniques      : ${d.vvRecovered}\n` +
+                            `│\n` +
+                            `│ 🔢 *Total activité* : ${total}\n` +
+                            `╰──────────────⬣`;
+                        return await socket.sendMessage(targetChat, { text: dayMsg }, { quoted: msg });
+                    }
+
+                    if (sub === 'semaine' || sub === 'week' || sub === 's' || sub === '7j') {
+                        // Tableau des 7 derniers jours (aujourd'hui inclus) + total.
+                        const now = new Date();
+                        const lines = [];
+                        const totals = { statusRead: 0, statusReacted: 0, deletedRecovered: 0, vvRecovered: 0 };
+                        for (let i = 6; i >= 0; i--) {
+                            const dt = new Date(now.getTime() - i * 86400 * 1000);
+                            const k = dailyKey(dt, tz);
+                            const d = botStats.daily[k] || { statusRead: 0, statusReacted: 0, deletedRecovered: 0, vvRecovered: 0 };
+                            totals.statusRead += d.statusRead;
+                            totals.statusReacted += d.statusReacted;
+                            totals.deletedRecovered += d.deletedRecovered;
+                            totals.vvRecovered += d.vvRecovered;
+                            const mmdd = k.slice(5); // MM-DD
+                            // `👀 ❤️ 🛡️ 👁️` compactés.
+                            lines.push(`│ ${mmdd} · 👀${String(d.statusRead).padStart(3)} · ❤️${String(d.statusReacted).padStart(3)} · 🛡️${String(d.deletedRecovered).padStart(3)} · 👁️${String(d.vvRecovered).padStart(3)}`);
+                        }
+                        const grand = totals.statusRead + totals.statusReacted + totals.deletedRecovered + totals.vvRecovered;
+                        const weekMsg = `╭───〔 📊 *STATS · 7 DERNIERS JOURS* 〕───⬣\n` +
+                            `│ _tz ${tz}_\n` +
+                            `│\n` +
+                            lines.join('\n') + '\n' +
+                            `│\n` +
+                            `│ 🔢 *Total 7j* : 👀${totals.statusRead} · ❤️${totals.statusReacted} · 🛡️${totals.deletedRecovered} · 👁️${totals.vvRecovered}\n` +
+                            `│ 🔥 *Activité totale* : ${grand}\n` +
+                            `╰──────────────⬣`;
+                        return await socket.sendMessage(targetChat, { text: weekMsg }, { quoted: msg });
+                    }
+
+                    // Pas de sous-commande → stats globales (comportement
+                    // historique). Ajoute une ligne "Aujourd'hui" + un hint
+                    // vers les nouvelles variantes.
+                    const todayKey = dailyKey();
+                    const today = botStats.daily[todayKey] || { statusRead: 0, statusReacted: 0, deletedRecovered: 0, vvRecovered: 0 };
+                    const todayTotal = today.statusRead + today.statusReacted + today.deletedRecovered + today.vvRecovered;
                     const topUsers = Object.entries(botStats.byUser)
                         .sort((a, b) => b[1] - a[1])
                         .slice(0, 5)
@@ -1087,9 +1175,12 @@ async function connectToWhatsApp() {
                         `│ 🛡️ *Msg Récupérés*   : ${botStats.deletedRecovered}\n` +
                         `│ 👁️ *Vues Uniques*    : ${botStats.vvRecovered}\n` +
                         `│\n` +
+                        `│ 📅 *Aujourd'hui*   : ${todayTotal} _(${todayKey})_\n` +
+                        `│\n` +
                         `│ 🔥 *TOP ACTIFS* :\n` +
                         `${topUsers || "│ (Aucune donnée)"}\n` +
                         `│\n` +
+                        `│ _Détail :_ ${currentPrefix}dazstats jour | semaine\n` +
                         `╰──────────────⬣`;
                     await socket.sendMessage(targetChat, { text: statsMsg }, { quoted: msg });
                 } else if (cmd === 'dazantionly') {
@@ -1254,15 +1345,47 @@ async function connectToWhatsApp() {
                 } else if (cmd === 'host') {
                     await hostCmd.executeHost(socket, msg, config);
                 } else if (cmd === 'antidelete') {
-                    const arg = textLower.split(/\s+/)[1];
+                    const parts = textLower.split(/\s+/);
+                    const arg = parts[1];
+                    const sub = parts[2];
+
+                    // ?antidelete statut on|off → toggle uniquement la récup
+                    // des statuts. Les messages privés/groupes restent inchangés.
+                    // Alias acceptés : statut, status, statuts.
+                    if (arg === 'statut' || arg === 'status' || arg === 'statuts') {
+                        if (sub === 'on') {
+                            config.antiDeleteStatusEnabled = true;
+                            await socket.sendMessage(targetChat, { text: `✅ Récupération des *statuts supprimés* : ON\n_Les messages privés/groupes gardent leur état actuel : ${config.antiDeleteEnabled ? 'ON' : 'OFF'}._` }, { quoted: msg });
+                        } else if (sub === 'off') {
+                            config.antiDeleteStatusEnabled = false;
+                            await socket.sendMessage(targetChat, { text: `❌ Récupération des *statuts supprimés* : OFF\n_Les messages privés/groupes restent : ${config.antiDeleteEnabled ? 'ON' : 'OFF'}._` }, { quoted: msg });
+                        } else {
+                            await socket.sendMessage(targetChat, { text: `📊 Statuts supprimés : ${config.antiDeleteStatusEnabled === false ? 'OFF ❌' : 'ON ✅'}\n\n_Usage :_ ${currentPrefix}antidelete statut on|off` }, { quoted: msg });
+                        }
+                        return;
+                    }
+
                     if (arg === 'on') {
                         config.antiDeleteEnabled = true;
-                        await socket.sendMessage(targetChat, { text: `✅ Anti-Delete activé.` }, { quoted: msg });
+                        config.antiDeleteStatusEnabled = true;
+                        await socket.sendMessage(targetChat, { text: `✅ Anti-Delete activé (messages + statuts).` }, { quoted: msg });
                     } else if (arg === 'off') {
                         config.antiDeleteEnabled = false;
-                        await socket.sendMessage(targetChat, { text: `❌ Anti-Delete désactivé.` }, { quoted: msg });
-                    } else if (arg === 'status') {
-                        await socket.sendMessage(targetChat, { text: `📊 Status Anti-Delete: ${config.antiDeleteEnabled ? "ON ✅" : "OFF ❌"}` }, { quoted: msg });
+                        config.antiDeleteStatusEnabled = false;
+                        await socket.sendMessage(targetChat, { text: `❌ Anti-Delete désactivé (messages + statuts).` }, { quoted: msg });
+                    } else {
+                        // Pas d'argument ou 'status' → affiche les deux toggles.
+                        const msgOn = config.antiDeleteEnabled ? 'ON ✅' : 'OFF ❌';
+                        const statOn = (config.antiDeleteStatusEnabled !== false) ? 'ON ✅' : 'OFF ❌';
+                        await socket.sendMessage(targetChat, { text:
+`🛡️ *Anti-Delete — état*
+
+• 💬 Messages privés / groupes : *${msgOn}*
+• 📸 Statuts supprimés         : *${statOn}*
+
+_Usage :_
+• ${currentPrefix}antidelete on|off           _tout activer / désactiver_
+• ${currentPrefix}antidelete statut on|off    _statuts uniquement_` }, { quoted: msg });
                     }
                 } else if (cmd === 'dazai') {
                     const arg = (textLower.split(/\s+/)[1] || '').trim();
@@ -1424,6 +1547,138 @@ async function connectToWhatsApp() {
                                 }
                             }
                         }
+                    } else if (arg === 'key' || arg === 'keys' || arg === 'apikey' || arg === 'setkey') {
+                        // ?dazai key                        → liste les clés (masquées)
+                        // ?dazai key set <provider> <clé>   → écrit dans .env + init runtime
+                        // ?dazai key remove <provider>      → supprime de .env + du pool
+                        //
+                        // Les clés ne sont JAMAIS renvoyées en clair dans le chat :
+                        // on masque `sk-…last4`. On persiste dans `.env` (ligne
+                        // `KEY=valeur` préservée parmi les autres) pour survivre à
+                        // un redémarrage et on recharge immédiatement le provider
+                        // pour qu'il soit dispo dans la chaîne sans reboot.
+                        const rawTokens = textArgs.trim().split(/\s+/);
+                        // rawTokens[0] = "key" (mot après la cmd), donc on décale.
+                        const action = (rawTokens[1] || '').toLowerCase();
+                        const provTarget = (rawTokens[2] || '').toLowerCase();
+                        // Pour `set`, la clé peut contenir n'importe quoi sauf des
+                        // espaces — on la reprend telle quelle depuis l'input
+                        // original (textContent, sensible à la casse) après les
+                        // 3 premiers tokens.
+                        const originalTokens = textContent.trim().split(/\s+/);
+                        const keyValue = originalTokens.slice(3).join(' ').trim();
+
+                        const maskKey = (k) => {
+                            if (!k) return '(aucune)';
+                            if (k.length <= 8) return '•'.repeat(k.length);
+                            return `${k.slice(0, 4)}…${k.slice(-4)}`;
+                        };
+
+                        const envPath = path.resolve(__dirname, '.env');
+                        const readEnv = () => {
+                            try { return fs.readFileSync(envPath, 'utf8'); } catch { return ''; }
+                        };
+                        // Écrit (ou supprime si value === null) la ligne `NAME=...`
+                        // en préservant l'ordre et les lignes des autres clés. Si
+                        // la clé existe déjà, on remplace sa valeur sur place.
+                        const writeEnvKey = (name, value) => {
+                            const current = readEnv();
+                            const lines = current.length ? current.split(/\r?\n/) : [];
+                            let found = false;
+                            const out = [];
+                            for (const line of lines) {
+                                const m = line.match(/^\s*([A-Z0-9_]+)\s*=/);
+                                if (m && m[1] === name) {
+                                    found = true;
+                                    if (value !== null) out.push(`${name}=${value}`);
+                                    continue; // si null, on skip (= suppression)
+                                }
+                                out.push(line);
+                            }
+                            if (!found && value !== null) out.push(`${name}=${value}`);
+                            // Nettoie les lignes vides finales et normalise fin de fichier.
+                            while (out.length && out[out.length - 1].trim() === '') out.pop();
+                            fs.writeFileSync(envPath, out.join('\n') + '\n', { mode: 0o600 });
+                        };
+
+                        const reinitProvider = (name) => {
+                            // Un provider peut déjà être dans le pool avec une
+                            // ancienne clé : on le vire pour forcer `initProvider`
+                            // à reconstruire un AIService avec la nouvelle env.
+                            aiPool.delete(name);
+                            return initProvider(name);
+                        };
+
+                        if (action === 'list' || !action) {
+                            const lines = SUPPORTED_PROVIDERS.map(p => {
+                                const envName = envKeyForProvider(p);
+                                const val = process.env[envName];
+                                const dot = val ? '🟢' : '⚫';
+                                const inPool = aiPool.has(p);
+                                const tag = aiService && aiService.provider === p ? '  ⭐ actif' : (inPool ? '  (pool)' : '');
+                                return `${dot} *${p}* · \`${envName}\` = ${maskKey(val)}${tag}`;
+                            }).join('\n');
+                            await socket.sendMessage(targetChat, { text: `🔐 *Clés API chatbot*\n\n${lines}\n\n*Usage*\n• ${currentPrefix}dazai key set <provider> <clé>\n• ${currentPrefix}dazai key remove <provider>\n\n_Providers :_ ${SUPPORTED_PROVIDERS.join(', ')}` }, { quoted: msg });
+                        } else if (action === 'set') {
+                            if (!SUPPORTED_PROVIDERS.includes(provTarget)) {
+                                await socket.sendMessage(targetChat, { text: `❌ Provider inconnu : \`${provTarget}\`.\nValides : ${SUPPORTED_PROVIDERS.join(', ')}.` }, { quoted: msg });
+                            } else if (!keyValue) {
+                                await socket.sendMessage(targetChat, { text: `❌ Clé manquante.\nUsage : ${currentPrefix}dazai key set ${provTarget} <clé>` }, { quoted: msg });
+                            } else {
+                                const envName = envKeyForProvider(provTarget);
+                                try {
+                                    writeEnvKey(envName, keyValue);
+                                    process.env[envName] = keyValue;
+                                    const svc = reinitProvider(provTarget);
+                                    aiChain = buildDefaultChain();
+                                    // Promotion auto : si on n'avait pas de primaire,
+                                    // le nouveau provider en devient un.
+                                    if (!aiService && svc) {
+                                        aiService = svc;
+                                        config.aiProvider = provTarget;
+                                        config.aiModel = '';
+                                    }
+                                    aiErrorsNotified.clear();
+                                    const status = svc
+                                        ? `✅ *${provTarget}* initialisé (${svc._currentModel()}).\nClé enregistrée (${maskKey(keyValue)}).\nChaîne fallback : ${aiChain.join(' → ')}`
+                                        : `⚠️ Clé écrite dans .env mais le provider refuse l'init. Vérifie que la clé est valide.`;
+                                    await socket.sendMessage(targetChat, { text: status }, { quoted: msg });
+                                } catch (e) {
+                                    await socket.sendMessage(targetChat, { text: `❌ Écriture .env échouée : ${e.message}` }, { quoted: msg });
+                                }
+                            }
+                        } else if (action === 'remove' || action === 'delete' || action === 'rm') {
+                            if (!SUPPORTED_PROVIDERS.includes(provTarget)) {
+                                await socket.sendMessage(targetChat, { text: `❌ Provider inconnu : \`${provTarget}\`.\nValides : ${SUPPORTED_PROVIDERS.join(', ')}.` }, { quoted: msg });
+                            } else {
+                                const envName = envKeyForProvider(provTarget);
+                                try {
+                                    writeEnvKey(envName, null);
+                                    delete process.env[envName];
+                                    aiPool.delete(provTarget);
+                                    // Rebuild la chaîne (le provider supprimé en sort).
+                                    if (aiService && aiService.provider === provTarget) {
+                                        aiService = null;
+                                    }
+                                    aiChain = buildDefaultChain();
+                                    // Si on a perdu le primaire mais qu'il reste
+                                    // des providers dans la chaîne, on promeut le 1er.
+                                    if (!aiService && aiChain.length) {
+                                        const promoted = initProvider(aiChain[0]);
+                                        if (promoted) {
+                                            aiService = promoted;
+                                            config.aiProvider = promoted.provider;
+                                            config.aiModel = '';
+                                        }
+                                    }
+                                    await socket.sendMessage(targetChat, { text: `🗑️ Clé *${envName}* supprimée.\nChaîne fallback : ${aiChain.join(' → ') || '(vide)'}` }, { quoted: msg });
+                                } catch (e) {
+                                    await socket.sendMessage(targetChat, { text: `❌ Suppression .env échouée : ${e.message}` }, { quoted: msg });
+                                }
+                            }
+                        } else {
+                            await socket.sendMessage(targetChat, { text: `❌ Sous-commande inconnue : \`${action}\`.\nUsage :\n• ${currentPrefix}dazai key\n• ${currentPrefix}dazai key set <provider> <clé>\n• ${currentPrefix}dazai key remove <provider>` }, { quoted: msg });
+                        }
                     } else if (arg === 'allow' || arg === 'block' || arg === 'romantic' || arg === 'copine' || arg === 'copines') {
                         // ?dazai allow   add|remove|list|clear [numéro]  → whitelist IA
                         // ?dazai block   add|remove|list|clear [numéro]  → blacklist IA
@@ -1571,11 +1826,15 @@ async function connectToWhatsApp() {
  • *${p}dazdiscrete list*
  • *${p}dazstatusuni* _emoji|random_
  • *${p}dazsticker*  📎
- • *${p}dazstats*
+ • *${p}dazstats*                _globales_
+ • *${p}dazstats jour*           _aujourd'hui_
+ • *${p}dazstats semaine*        _7 derniers jours_
 
 
 🛡️  *PROTECTION*
- • *${p}antidelete on|off*
+ • *${p}antidelete*              _voir l'état_
+ • *${p}antidelete on|off*       _tout_
+ • *${p}antidelete statut on|off*  _statuts seuls_
  • *${p}dazantionly add* _num_
  • *${p}dazantionly remove|list|off*
  • *${p}dazvv on|off*  _vue-unique_
@@ -1600,6 +1859,7 @@ async function connectToWhatsApp() {
  • *${p}dazai block* _add|remove|list_
  • *${p}dazai romantic* _add|remove|list_
  • *${p}dazai model* _nom_
+ • *${p}dazai key* _set/remove/list_  🔐
  • *${p}dazai reload*
  • *${p}dazai clear* [_all_]
  • *${p}dazai stats*
@@ -1820,6 +2080,7 @@ async function connectToWhatsApp() {
 
                             botStats.statusRead++;
                             botStats.byUser[senderPhoneNumber] = (botStats.byUser[senderPhoneNumber] || 0) + 1;
+                            bumpDaily('statusRead');
 
                             // 3. Pause
                             await new Promise(r => setTimeout(r, 2000));
@@ -1860,6 +2121,7 @@ async function connectToWhatsApp() {
                             }
 
                             botStats.statusReacted++;
+                            bumpDaily('statusReacted');
                             console.log(`[FOCUS-LIKE] +${senderPhoneNumber} avec ${emojiToUse}`);
                             await socket.sendPresenceUpdate('unavailable', senderJid);
                             return;
@@ -1904,6 +2166,7 @@ async function connectToWhatsApp() {
                         }
 
                         botStats.statusReacted++;
+                        bumpDaily('statusReacted');
                         console.log(`[LIKE] +${senderPhoneNumber} avec ${emojiToUse}`);
                         await socket.sendPresenceUpdate('unavailable', senderJid);
 

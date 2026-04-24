@@ -59,6 +59,10 @@ module.exports = {
     // Anti-Delete settings
     antiDeleteEnabled: true,
     antiDeleteChat: "", // Default destination for deleted messages
+    // Sous-toggle : si false, les statuts supprimés sont ignorés tandis que les
+    // messages privés/groupes restent récupérés. Contrôle via `?antidelete
+    // statut on|off` depuis WhatsApp.
+    antiDeleteStatusEnabled: true,
 
     // Fuseau horaire utilisé pour interpréter les heures passées aux commandes
     // de planification (?planstatus / ?planmsg). Par défaut Africa/Porto-Novo

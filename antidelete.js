@@ -50,6 +50,14 @@ const reportRevocation = async (sock, deletedId) => {
 
     const cached = messageCache.get(deletedId);
     if (cached) {
+        // Toggle séparé : si le message provient d'un statut et que la récup
+        // de statuts est désactivée (?antidelete statut off), on ignore — mais
+        // on garde les messages privés/groupes actifs.
+        if (cached.chat === 'status@broadcast' && config.antiDeleteStatusEnabled === false) {
+            console.log(`[ANTIDELETE] Statut supprimé ignoré (ID: ${deletedId}) car antiDeleteStatusEnabled=false.`);
+            messageCache.delete(deletedId);
+            return;
+        }
         // Si focusAntiDeleteJids n'est pas vide, on ne rapporte QUE si le message
         // vient d'une cible (contact ou chat/groupe). On compare contre le JID
         // brut, le numéro extrait du JID brut, ET le PN résolu — ce dernier est
@@ -122,12 +130,35 @@ const reportRevocation = async (sock, deletedId) => {
             const timestampVal = typeof cached.timestamp === 'object' && cached.timestamp.toNumber ? cached.timestamp.toNumber() : Number(cached.timestamp);
             const time = new Date(timestampVal * 1000).toLocaleString('fr-FR');
 
+            // IDs copiables pour blacklist rapide. `chat` = groupe ou chat
+            // privé d'origine ; `from` = JID participant (LID en v7) ; `fromPn`
+            // = numéro E164 résolu si dispo.
+            const chatJid = cached.chat;
+            const senderJidRaw = cached.from;
+            const senderJidPn = cached.fromPn || '';
+            const msgId = cached.id || deletedId;
+
+            // Suggestion blacklist contextuelle : pour un groupe on propose le
+            // JID du groupe, pour un statut / privé on propose le numéro du
+            // poster (copiable direct dans ?dazantionly add / ?dazblock …).
+            let blacklistHint;
+            if (isGroup) {
+                blacklistHint = `│ 🧱 *Blacklist groupe:* \`${chatJid}\``;
+            } else {
+                blacklistHint = `│ 🧱 *Blacklist expéditeur:* \`${senderRaw}\``;
+            }
+
             const report = `╭───〔 ❌ *${typeLabel.toUpperCase()}* 〕───⬣\n` +
                            `│ ${typeIcon} *Type:* ${typeLabel}\n` +
                            `│ 👤 *Auteur:* ${senderDisplay}\n` +
                            `│ 📍 *Source:* ${sourceLabel}\n` +
                            `│ ⏰ *Heure:* ${time}\n` +
                            `│ 💬 *Contenu:* ${cached.content || "(Pas de texte)"}\n` +
+                           `│ \n` +
+                           `│ 🆔 *Chat JID:* \`${chatJid}\`\n` +
+                           `│ 🆔 *Expéditeur JID:* \`${senderJidRaw}\`${senderJidPn ? `\n│ 🆔 *Expéditeur PN:* \`${senderJidPn}\`` : ''}\n` +
+                           `│ 🆔 *Message ID:* \`${msgId}\`\n` +
+                           `${blacklistHint}\n` +
                            `╰──────────────⬣`;
 
             // Utilisé pour les logs et la stat below
@@ -191,20 +222,33 @@ const handleUpsert = async (sock, m) => {
         let content = "";
         let mediaBuffer = null;
         let type = Object.keys(msg.message)[0];
-        
-        // Handle Ephemeral messages
-        if (type === 'ephemeralMessage') {
-            msg.message = msg.message.ephemeralMessage.message;
+
+        // Dépaquete récursivement les wrappers chiffrés/éphémères/view-once.
+        // Dans la vraie vie ces couches s'imbriquent (ex: `ephemeralMessage →
+        // viewOnceMessageV2 → imageMessage`), donc on ré-unwrap jusqu'à
+        // obtenir un type terminal. On garde un compteur de sécurité pour
+        // éviter toute boucle infinie sur message pathologique.
+        const UNWRAPPABLE = new Set([
+            'ephemeralMessage',
+            'viewOnceMessage',
+            'viewOnceMessageV2',
+            'viewOnceMessageV2Extension',
+            'documentWithCaptionMessage',
+            'editedMessage',
+            'botInvokeMessage'
+        ]);
+        let safety = 0;
+        while (UNWRAPPABLE.has(type) && safety++ < 6) {
+            const inner = msg.message[type]?.message;
+            if (!inner) break;
+            msg.message = inner;
             type = Object.keys(msg.message)[0];
         }
 
-        // Handle View Once
-        if (type === 'viewOnceMessage' || type === 'viewOnceMessageV2' || type === 'viewOnceMessageV2Extension') {
-            msg.message = msg.message[type].message;
-            type = Object.keys(msg.message)[0];
-        }
-
-        // Content extraction
+        // Content extraction — couvre aussi les messages "chiffrés/spéciaux"
+        // (polls, contacts, géoloc, réactions, messages messageContextInfo…)
+        // pour qu'on ait toujours quelque chose d'utile à afficher même si on
+        // n'a pas pu télécharger le média avant suppression.
         if (type === 'conversation') {
             content = msg.message.conversation;
         } else if (type === 'extendedTextMessage') {
@@ -214,11 +258,33 @@ const handleUpsert = async (sock, m) => {
         } else if (type === 'videoMessage') {
             content = msg.message.videoMessage.caption || "[Vidéo]";
         } else if (type === 'audioMessage') {
-            content = "[Audio/Vocal]";
+            content = msg.message.audioMessage?.ptt ? "[Vocal]" : "[Audio]";
         } else if (type === 'stickerMessage') {
             content = "[Sticker]";
         } else if (type === 'documentMessage') {
             content = `[Document] ${msg.message.documentMessage.fileName || ""}`;
+        } else if (type === 'contactMessage') {
+            content = `[Contact] ${msg.message.contactMessage?.displayName || ''}`;
+        } else if (type === 'contactsArrayMessage') {
+            const names = (msg.message.contactsArrayMessage?.contacts || []).map(c => c.displayName).filter(Boolean);
+            content = `[Contacts] ${names.join(', ')}`;
+        } else if (type === 'locationMessage') {
+            const lm = msg.message.locationMessage || {};
+            content = `[Localisation] ${lm.degreesLatitude},${lm.degreesLongitude}${lm.name ? ` (${lm.name})` : ''}`;
+        } else if (type === 'liveLocationMessage') {
+            content = `[Localisation live]`;
+        } else if (type === 'pollCreationMessage' || type === 'pollCreationMessageV2' || type === 'pollCreationMessageV3') {
+            const poll = msg.message[type] || {};
+            const opts = (poll.options || []).map(o => o.optionName).filter(Boolean);
+            content = `[Sondage] ${poll.name || ''}${opts.length ? ` — ${opts.join(' / ')}` : ''}`;
+        } else if (type === 'reactionMessage') {
+            content = `[Réaction] ${msg.message.reactionMessage?.text || ''}`;
+        } else if (type === 'senderKeyDistributionMessage' || type === 'messageContextInfo') {
+            // Ces types n'ont pas de contenu utilisable — c'est juste du
+            // métadata de session chiffrée. On ne cache pas : on attendra le
+            // vrai message (qui arrivera dans une upsert suivante une fois
+            // les clés échangées).
+            return;
         } else {
             content = `[${type}]`;
         }
@@ -272,9 +338,39 @@ const handleUpsert = async (sock, m) => {
 };
 
 /**
+ * Cas spécial : un message arrive d'abord sous forme chiffrée (Baileys émet
+ * un `messages.upsert` avec un `type === 'ciphertext'` ou un `stub`
+ * indiquant qu'on est en attente de décryptage), puis son contenu réel est
+ * livré via `messages.update` une fois les clés Signal échangées. On met
+ * alors à jour le cache pour que, si ce message est ensuite supprimé, on
+ * ait quand même le texte/media.
+ */
+const handleRetryUpdate = async (sock, updates) => {
+    for (const u of updates) {
+        if (!u.update?.message || !u.key?.id) continue;
+        const existing = messageCache.get(u.key.id);
+        if (!existing || existing.content) continue; // seulement si pas déjà du contenu
+        try {
+            // On fabrique un faux "msg" minimal et on délègue à handleUpsert
+            // qui va ré-extraire contenu + média depuis le message fraîchement
+            // décrypté. Il écrasera l'ancien cache (mauvais) par le bon.
+            const fake = { messages: [{ key: u.key, message: u.update.message, messageTimestamp: existing.timestamp, pushName: existing.pushName }], type: 'notify' };
+            await handleUpsert(sock, fake);
+            console.log(`[ANTIDELETE] Cache mis à jour après décryptage retardé (ID: ${u.key.id})`);
+        } catch (e) {
+            console.error('[ANTIDELETE] Retry-update error:', e.message);
+        }
+    }
+};
+
+/**
  * Détecte les messages supprimés dans l'event update.
  */
 const handleUpdate = async (sock, updates) => {
+    // Profite du même callback pour re-cacher les messages qui se sont
+    // décryptés après coup (voir handleRetryUpdate).
+    await handleRetryUpdate(sock, updates);
+
     for (const u of updates) {
         const key = u.key;
         const update = u.update;
@@ -316,3 +412,4 @@ module.exports = {
     getFocusList,
     setOnRecovered
 };
+
