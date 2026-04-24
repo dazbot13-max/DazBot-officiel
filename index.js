@@ -2004,87 +2004,96 @@ _Usage :_
                     const senderJid = msg.key.participant || msg.key.remoteJid;
                     const senderName = senderJid.split('@')[0];
 
-                    // Même langage visuel que ?tagall : image (banner) + caption,
-                    // bordures `╭───────◇` pour le titre, blocs `╭───〔 … 〕───⬣`
-                    // pour chaque section, pied `> PRODUCED BY DAZBOT`.
-                    const section = (title, lines) =>
-`╭───〔 *${title}* 〕───⬣
+                    // Langage visuel ?tagall + emoji par commande : image (banner)
+                    // + caption, titre encadré `╭═══ ◈ ═══╮`, blocs par section
+                    // `╭─〔 EMOJI TITRE 〕─⬣` avec chaque commande préfixée d'un
+                    // emoji thématique pour un scan visuel rapide au pouce.
+                    const section = (icon, title, lines) =>
+`╭─〔 ${icon} *${title}* 〕─⬣
 ${lines.map(l => `│ ${l}`).join('\n')}
-╰──────────────⬣`;
+╰━━━━━━━━━━━━⬣`;
 
                     const caption =
-`╭───────◇
-│ 🤖 *DAZBOT — MENU* 🤖
-╰───────◇
+`╭━━━━━━━━━━━━━━━━╮
+┃  ⚡ *D A Z · B O T* ⚡  ┃
+┃   🤖 _command center_   ┃
+╰━━━━━━━━━━━━━━━━╯
 
-👤 *Auteur* : @${senderName}
-⏱️ *Uptime* : ${uptime}
-🔣 *Préfixe* : ${p}
-🤖 *Chatbot* : ${aiDot} ${config.aiAutoReply ? 'ON' : 'OFF'}
-👑 *Owner* : ${ownerTag}
+╭─〔 📡 *ÉTAT* 〕─⬣
+│ 👤 *Auteur*  ➜ @${senderName}
+│ ⏱️ *Uptime*  ➜ ${uptime}
+│ 🔣 *Préfixe* ➜ \`${p}\`
+│ 🤖 *Chatbot* ➜ ${aiDot} ${config.aiAutoReply ? '*ON*' : '*OFF*'}
+│ 👑 *Owner*   ➜ ${ownerTag}
+╰━━━━━━━━━━━━⬣
 
-${section('LIKE CIBLÉ', [
-    `${p}dazonly add _num_ _emoji_`,
-    `${p}dazonly remove _num_`,
-    `${p}dazonly list`,
-    `${p}dazonly off`,
+${section('💖', 'LIKE CIBLÉ', [
+    `✨ ${p}dazonly add _num_ _emoji_`,
+    `🗑️ ${p}dazonly remove _num_`,
+    `📜 ${p}dazonly list`,
+    `🛑 ${p}dazonly off`,
 ])}
 
-${section('STATUS · VISION', [
-    `${p}dazstatus on|off  _like tous_`,
-    `${p}dazview on|off    _vision seule_`,
-    `${p}dazdiscrete add _num_`,
-    `${p}dazdiscrete list`,
-    `${p}dazstatusuni _emoji|random_`,
-    `${p}dazsticker  📎`,
-    `${p}dazstats             _globales_`,
-    `${p}dazstats jour        _aujourd'hui_`,
-    `${p}dazstats semaine     _7 derniers jours_`,
+${section('📸', 'STATUS · VISION', [
+    `❤️ ${p}dazstatus on|off  _like tous_`,
+    `👁️ ${p}dazview on|off    _vision seule_`,
+    `🤫 ${p}dazdiscrete add _num_`,
+    `📋 ${p}dazdiscrete list`,
+    `🎭 ${p}dazstatusuni _emoji|random_`,
+    `🎞️ ${p}dazsticker  📎`,
+    `📊 ${p}dazstats             _globales_`,
+    `📅 ${p}dazstats jour        _aujourd'hui_`,
+    `🗓️ ${p}dazstats semaine     _7 jours_`,
 ])}
 
-${section('PROTECTION', [
-    `${p}antidelete             _état_`,
-    `${p}antidelete on|off      _tout_`,
-    `${p}antidelete statut on|off _statuts_`,
-    `${p}antidelete skip add|remove|list|clear`,
-    `${p}dazantionly add _num_`,
-    `${p}dazantionly remove|list|off`,
-    `${p}dazvv on|off  _vue-unique_`,
+${section('🛡️', 'PROTECTION', [
+    `ℹ️ ${p}antidelete             _état_`,
+    `🔛 ${p}antidelete on|off      _tout_`,
+    `📸 ${p}antidelete statut on|off`,
+    `🙈 ${p}antidelete skip add|remove|list|clear`,
+    `🚫 ${p}dazantionly add _num_`,
+    `📋 ${p}dazantionly remove|list|off`,
+    `👀 ${p}dazvv on|off  _vue-unique_`,
 ])}
 
-${section('PLANIFICATEUR', [
-    `${p}ps _HH:MM_  📎`,
-    `${p}ps _JJ/MM HH:MM_  📎`,
-    `${p}ps _JJ/MM/AAAA HH:MM_  📎`,
-    `${p}pm _HH:MM num_  📎`,
-    `${p}planlist`,
-    `${p}plancancel _id_`,
-    `${p}planreset`,
+${section('⏰', 'PLANIFICATEUR', [
+    `🕐 ${p}ps _HH:MM_  📎`,
+    `📆 ${p}ps _JJ/MM HH:MM_  📎`,
+    `🗓️ ${p}ps _JJ/MM/AAAA HH:MM_  📎`,
+    `📲 ${p}pm _HH:MM num_  📎`,
+    `📋 ${p}planlist`,
+    `❌ ${p}plancancel _id_`,
+    `♻️ ${p}planreset`,
 ])}
 
-${section('CHATBOT IA', [
-    `${p}dazai          _dashboard_`,
-    `${p}dazai on|off`,
-    `${p}dazai provider _nom_`,
-    `${p}dazai chain _p1 p2 …_`,
-    `${p}dazai allow|block add|remove|list`,
-    `${p}dazai romantic add|remove|list`,
-    `${p}dazai model _nom_`,
-    `${p}dazai key set/remove/list  🔐`,
-    `${p}dazai reload / clear [all] / stats`,
+${section('🧠', 'CHATBOT IA', [
+    `📊 ${p}dazai          _dashboard_`,
+    `🔛 ${p}dazai on|off`,
+    `🔌 ${p}dazai provider _nom_`,
+    `🔗 ${p}dazai chain _p1 p2 …_`,
+    `✅ ${p}dazai allow|block add|remove|list`,
+    `💕 ${p}dazai romantic add|remove|list`,
+    `🎛️ ${p}dazai model _nom_`,
+    `🔐 ${p}dazai key set/remove/list`,
+    `♻️ ${p}dazai reload / clear [all] / stats`,
 ])}
 
-${section('CONFIG & SYSTÈME', [
-    `${p}setprefix _symbole_`,
-    `${p}dazconnect show|on|off`,
-    `${p}dazreset   _reset focus_`,
-    `${p}pair qr    _génère un QR PNG_`,
-    `${p}host       _infos serveur_`,
+${section('⚙️', 'CONFIG & SYSTÈME', [
+    `🔣 ${p}setprefix _symbole_`,
+    `📣 ${p}dazconnect show|on|off`,
+    `🔄 ${p}dazreset   _reset focus_`,
+    `📱 ${p}pair qr    _génère un QR PNG_`,
+    `🖥️ ${p}host       _infos serveur_`,
 ])}
 
-🗒️ _📎 = réponds à un message pour l'attacher._
+╭─〔 💡 *ASTUCES* 〕─⬣
+│ 📎 = réponds à un message pour l'attacher
+│ 🔐 = commande owner-only
+│ ⚡ fallback auto IA si un provider sature
+╰━━━━━━━━━━━━⬣
 
-> PRODUCED BY DAZBOT`;
+✨ _Et tout ça, c'est le destin_ 🫠
+> 🤖 *PRODUCED BY DAZBOT* · _by ${ownerTag}_`;
 
                     // Envoi avec la bannière configurée (même fallback que
                     // tagall : si l'image échoue, on retombe sur du texte).
