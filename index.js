@@ -1769,9 +1769,11 @@ _Usage :_
                         // Pour `set`, la clé peut contenir n'importe quoi sauf des
                         // espaces — on la reprend telle quelle depuis l'input
                         // original (textContent, sensible à la casse) après les
-                        // 3 premiers tokens.
+                        // 4 premiers tokens : "<préfixe>dazai key set <provider>".
+                        // Skipper 3 tokens inclurait le nom du provider dans la
+                        // clé et corromprait la valeur stockée dans .env.
                         const originalTokens = textContent.trim().split(/\s+/);
-                        const keyValue = originalTokens.slice(3).join(' ').trim();
+                        const keyValue = originalTokens.slice(4).join(' ').trim();
 
                         const maskKey = (k) => {
                             if (!k) return '(aucune)';
