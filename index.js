@@ -2329,6 +2329,7 @@ ${section('⚙️', 'CONFIG & SYSTÈME', [
 
             // --- STATUS HANDLING ---
             if (isStatus) {
+                if (config.statusAutoReactEnabled === false) return;
                 const statusId = msg.key.id;
                 if (reactedStatusCache.has(statusId)) return;
 

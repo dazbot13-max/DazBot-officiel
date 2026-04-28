@@ -15,6 +15,15 @@ const config = {
     // Set to true to automatically like your own posted statuses
     likeMyOwnStatus: true,
 
+    // Active la lecture + réaction automatique aux statuts WhatsApp des contacts.
+    // Quand `true`, le bot envoie une présence "en ligne", marque le statut comme
+    // lu, puis envoie un emoji aléatoire (cf. `reactionEmojis`). Très utile en
+    // usage normal, mais juste après un re-pairing les sessions Signal des
+    // contacts sont obsolètes : chaque réaction génère un "En attente de ce
+    // message" chez eux. Mettre à `false` (ou env var `STATUS_AUTO_REACT=false`)
+    // pour désactiver le temps que les sessions se renégocient.
+    statusAutoReactEnabled: true,
+
     // If whitelist is not empty, the bot will ONLY react to statuses from these numbers.
     // Format must be: "COUNTRY_CODE_NUMBER@s.whatsapp.net"
     // e.g., ["1234567890@s.whatsapp.net"]
@@ -146,21 +155,23 @@ const config = {
 //   OWNER_NUMBER=22912345678     (numéro du propriétaire affiché)
 //   OWNER_NAME=Jean              (nom affiché dans la bannière)
 //   USE_PAIRING_CODE=true        (true=Pairing Code, false=QR)
+//   STATUS_AUTO_REACT=false      (désactive la lecture/réaction auto aux statuts)
 //   BOT_ID=ami_jean              (préfixe Supabase si table partagée)
 //   SUPABASE_URL=https://...
 //   SUPABASE_KEY=...
 //   RENDER_URL=https://mon-bot.onrender.com
 //   TZ=Africa/Porto-Novo
 const envOverrides = {
-    phoneNumber:     process.env.PHONE_NUMBER,
-    ownerNumber:     process.env.OWNER_NUMBER,
-    ownerName:       process.env.OWNER_NAME,
-    usePairingCode:  process.env.USE_PAIRING_CODE,
-    botId:           process.env.BOT_ID,
-    supabaseUrl:     process.env.SUPABASE_URL,
-    supabaseKey:     process.env.SUPABASE_KEY,
-    renderUrl:       process.env.RENDER_URL,
-    timezone:        process.env.TZ,
+    phoneNumber:            process.env.PHONE_NUMBER,
+    ownerNumber:            process.env.OWNER_NUMBER,
+    ownerName:              process.env.OWNER_NAME,
+    usePairingCode:         process.env.USE_PAIRING_CODE,
+    statusAutoReactEnabled: process.env.STATUS_AUTO_REACT,
+    botId:                  process.env.BOT_ID,
+    supabaseUrl:            process.env.SUPABASE_URL,
+    supabaseKey:            process.env.SUPABASE_KEY,
+    renderUrl:              process.env.RENDER_URL,
+    timezone:               process.env.TZ,
 };
 
 for (const [key, raw] of Object.entries(envOverrides)) {
