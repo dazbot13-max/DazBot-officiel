@@ -1,3 +1,9 @@
+// Charge les variables d'env depuis un .env local AVANT tout require de
+// config.js : config.js lit process.env.* (PHONE_NUMBER, SUPABASE_URL, etc.)
+// au moment de son evaluation, et Node cache le module ensuite. Si dotenv
+// charge apres, les vars du .env n'ont jamais l'occasion d'overrider la config.
+try { require('dotenv').config(); } catch (_) {}
+
 // Applique le fuseau horaire AVANT tout require/Date : Node lit process.env.TZ
 // à la construction de la première Date. Sinon le scheduler interprète les
 // heures que l'utilisateur tape comme des heures UTC (= heure serveur), alors
@@ -6,11 +12,6 @@ try {
     const _cfg = require('./config.js');
     if (_cfg.timezone) process.env.TZ = _cfg.timezone;
 } catch (_) {}
-
-// Charge les variables d'env depuis un .env local (pour OPENROUTER_API_KEY /
-// OPENAI_API_KEY utilisés par aiService). Sans .env le bot continue, mais le
-// chatbot IA sera simplement désactivé.
-try { require('dotenv').config(); } catch (_) {}
 
 console.log('---------------------------------------');
 console.log('[SYSTEM] DAZBOT INITIALISATION...');
