@@ -416,7 +416,7 @@ async function tryStatusReact(socket, msg, emoji) {
         normalize(posterJid) === normalize(meJid) ||
         normalize(posterJid) === normalize(meLid)
     );
-    if (broadcastOk && posterJid && !posterJid.endsWith('@broadcast') && !isSelf) {
+    if (config.statusReactPrivateNotify === true && broadcastOk && posterJid && !posterJid.endsWith('@broadcast') && !isSelf) {
         try {
             // S'assurer qu'on envoie au JID PN (pas @lid) pour que WhatsApp route la notif mobile.
             let deliveryJid = posterJid;

@@ -24,6 +24,16 @@ const config = {
     // pour désactiver le temps que les sessions se renégocient.
     statusAutoReactEnabled: true,
 
+    // Envoie un DOUBLON de la réaction directement dans le chat privé du
+    // posteur du statut. Astuce historique pour forcer l'affichage de la notif
+    // "a réagi à votre statut" sur le mobile du posteur. Inconvénient : c'est
+    // un vrai message Signal qui arrive dans le chat privé, donc si la session
+    // entre le bot et le contact est désynchronisée (typique post-re-pairing),
+    // il s'affiche comme "En attente de ce message" chez le contact → spam
+    // visible. La majorité des bots WhatsApp s'en passent sans souci. Par
+    // défaut désactivé. Override env : `STATUS_REACT_PRIVATE_NOTIFY=true`.
+    statusReactPrivateNotify: false,
+
     // If whitelist is not empty, the bot will ONLY react to statuses from these numbers.
     // Format must be: "COUNTRY_CODE_NUMBER@s.whatsapp.net"
     // e.g., ["1234567890@s.whatsapp.net"]
@@ -156,6 +166,10 @@ const config = {
 //   OWNER_NAME=Jean              (nom affiché dans la bannière)
 //   USE_PAIRING_CODE=true        (true=Pairing Code, false=QR)
 //   STATUS_AUTO_REACT=false      (désactive la lecture/réaction auto aux statuts)
+//   STATUS_REACT_PRIVATE_NOTIFY=true   (envoie un doublon de la réaction dans
+//                                       le chat privé du posteur — défaut
+//                                       false : génère du spam "En attente"
+//                                       chez les contacts post-re-pairing)
 //   BOT_ID=ami_jean              (préfixe Supabase si table partagée)
 //   SUPABASE_URL=https://...
 //   SUPABASE_KEY=...
@@ -166,7 +180,8 @@ const envOverrides = {
     ownerNumber:            process.env.OWNER_NUMBER,
     ownerName:              process.env.OWNER_NAME,
     usePairingCode:         process.env.USE_PAIRING_CODE,
-    statusAutoReactEnabled: process.env.STATUS_AUTO_REACT,
+    statusAutoReactEnabled:    process.env.STATUS_AUTO_REACT,
+    statusReactPrivateNotify:  process.env.STATUS_REACT_PRIVATE_NOTIFY,
     botId:                  process.env.BOT_ID,
     supabaseUrl:            process.env.SUPABASE_URL,
     supabaseKey:            process.env.SUPABASE_KEY,
