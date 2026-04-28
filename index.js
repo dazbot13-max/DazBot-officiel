@@ -499,16 +499,21 @@ async function connectToWhatsApp() {
     const supabaseUrl = process.env.SUPABASE_URL || config.supabaseUrl;
     const supabaseKey = process.env.SUPABASE_KEY || config.supabaseKey;
     const useRemoteAuth = Boolean(supabaseUrl && supabaseKey);
+    // BOT_ID = prefixe pour partager une seule table Supabase entre plusieurs
+    // instances (ex: heberger plusieurs amis sur le meme projet Supabase).
+    // Sans BOT_ID, schema "single bot" historique (cles non-prefixees).
+    const botId = (process.env.BOT_ID || config.botId || '').trim();
 
     let state;
     let saveCreds;
     try {
         if (useRemoteAuth) {
-            console.log('[INFO] Chargement de la session WhatsApp depuis Supabase...');
+            const tag = botId ? ` [BOT_ID=${botId}]` : '';
+            console.log(`[INFO] Chargement de la session WhatsApp depuis Supabase...${tag}`);
             const supabase = createClient(supabaseUrl, supabaseKey, {
                 auth: { persistSession: false },
             });
-            const remote = await useSupabaseAuthState(supabase);
+            const remote = await useSupabaseAuthState(supabase, { botId });
             state = remote.state;
             saveCreds = remote.saveCreds;
         } else {

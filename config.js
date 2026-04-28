@@ -66,6 +66,12 @@ module.exports = {
     // d'inactivité. Laisse vide sur VPS classique.
     renderUrl: "",
 
+    // Préfixe unique pour les clés Supabase quand on héberge plusieurs bots
+    // (un par ami) sur le même projet Supabase. Chaque instance doit avoir
+    // sa propre valeur (ex: "ami_jean", "ami_marie") via env var `BOT_ID` ou
+    // ce champ. Vide = mode mono-bot (clés non préfixées, rétrocompatible).
+    botId: "",
+
     // Anti-Delete settings
     antiDeleteEnabled: true,
     antiDeleteChat: "", // Default destination for deleted messages

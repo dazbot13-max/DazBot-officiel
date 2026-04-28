@@ -334,6 +334,7 @@ Render Free a deux pièges : il **endort** le service après 15 min d'inactivit�
   | `GEMINI_API_KEY` | clé Gemini (https://aistudio.google.com/apikey) |
   | `SUPABASE_URL` | URL Supabase de l'étape 1 |
   | `SUPABASE_KEY` | anon key Supabase de l'étape 1 |
+  | `BOT_ID` | identifiant unique pour cette instance, ex: `ami_jean` (voir multi-bot ci-dessous) |
   | `RENDER_URL` | l'URL du service Render (visible après création, ex: `https://mon-bot.onrender.com`) |
   | `TZ` | `Africa/Porto-Novo` (ou autre fuseau local) |
 
@@ -354,6 +355,25 @@ Le bot s'auto-ping déjà toutes les 5 min via `RENDER_URL`, mais Render Free do
 - 750h cumulées par mois (≈ 31 jours, donc tout juste si le bot tourne 24/7).
 - Cold start de ~30 s après un sleep — d'où l'importance du ping externe.
 - Si tu dépasses, le service reste off jusqu'au mois suivant.
+
+### Multi-bot dans un seul Supabase (un par ami)
+
+Pour héberger plusieurs instances (toi + tes amis) en partageant **un seul** projet Supabase, il suffit de donner à chaque instance un `BOT_ID` différent. Toutes les clés de session sont préfixées par `<BOT_ID>:` dans la table `whatsapp_auth`, donc les sessions ne se mélangent pas.
+
+| Instance | BOT_ID | Lignes Supabase |
+|---|---|---|
+| Toi | `daziano` | `daziano:creds`, `daziano:pre-key-1`, … |
+| Ami 1 | `ami_jean` | `ami_jean:creds`, `ami_jean:pre-key-1`, … |
+| Ami 2 | `ami_marie` | `ami_marie:creds`, … |
+
+**Workflow pour ajouter un ami (5 min par ami) :**
+1. Sur Render → New Web Service pointant sur le même repo.
+2. Env vars : reprendre les TIENS pour `SUPABASE_URL` / `SUPABASE_KEY`, mais mettre un `BOT_ID` unique pour cet ami (ex: `ami_jean`).
+3. Mettre `RENDER_URL` à l'URL de CE service Render (différente pour chaque ami).
+4. Pour le pairing : modifier temporairement `phoneNumber` dans `config.js` au numéro de l'ami, push, récupérer le Pairing Code dans les logs Render, le donner à l'ami → il scanne dans WhatsApp → c'est lié et sauvé dans Supabase sous `ami_jean:*`.
+5. Configurer un monitor UptimeRobot sur l'URL Render de l'ami (ping toutes les 5 min).
+
+**Quotas Supabase Free** : 500 Mo storage, ≈ 500 sessions max (chaque session pèse < 1 Mo). Bandwidth 5 Go/mois (~10 amis actifs en simultané, à surveiller au-delà).
 
 ### Option 5 : Railway / Fly.io
 
