@@ -149,7 +149,8 @@ const config = {
 //   BOT_ID=ami_jean              (préfixe Supabase si table partagée)
 //   SUPABASE_URL=https://...
 //   SUPABASE_KEY=...
-//   RENDER_URL=https://mon-bot.onrender.com
+//   RENDER_URL=https://mon-bot.onrender.com   (optionnel : Render expose deja
+//                                              RENDER_EXTERNAL_URL automatiquement)
 //   TZ=Africa/Porto-Novo
 const envOverrides = {
     phoneNumber:     process.env.PHONE_NUMBER,
@@ -159,7 +160,10 @@ const envOverrides = {
     botId:           process.env.BOT_ID,
     supabaseUrl:     process.env.SUPABASE_URL,
     supabaseKey:     process.env.SUPABASE_KEY,
-    renderUrl:       process.env.RENDER_URL,
+    // Render injecte RENDER_EXTERNAL_URL automatiquement (ex:
+    // https://mon-service.onrender.com), donc plus besoin de definir RENDER_URL
+    // a la main par service. Priorite : RENDER_URL explicite > RENDER_EXTERNAL_URL.
+    renderUrl:       process.env.RENDER_URL || process.env.RENDER_EXTERNAL_URL,
     timezone:        process.env.TZ,
 };
 
