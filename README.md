@@ -343,10 +343,20 @@ Render Free a deux pièges : il **endort** le service après 15 min d'inactivit�
   | `TZ` | `Africa/Porto-Novo` (ou autre fuseau local) |
 
 **3. Premier démarrage (appairage)**
-- Render redéploie tout seul après chaque push, ou immédiatement après création du service.
+
+Deux méthodes possibles :
+
+**a) Via la page web `/pair` (recommandé pour un ami)**
+- Ouvre l'URL : `https://mon-bot.onrender.com/pair?key=<PAIR_PASSWORD>` (env var optionnelle pour protéger la page).
+- Saisir le numéro WhatsApp + choisir **QR Code** (à scanner) ou **Pairing Code** (8 chiffres à taper dans WhatsApp).
+- Page bascule sur ✅ "Connecté" dès que le pairing réussit.
+- Tu peux envoyer le lien à l'ami pour qu'il fasse le pairing tout seul depuis son navigateur.
+
+**b) Via les logs Render (méthode historique)**
 - Onglet **Logs** Render → chercher `[ACTION REQUIRED] Your Pairing Code: XXXX-XXXX`.
 - Sur le téléphone de l'ami : WhatsApp → Appareils liés → Lier un appareil avec un numéro → entrer le code.
-- La session est sauvée dans Supabase, plus aucun re-pairing nécessaire — même après redéploiement / restart Render.
+
+Une fois pairé, la session est sauvée dans Supabase, plus aucun re-pairing nécessaire — même après redéploiement / restart Render.
 
 **4. Configurer le keep-alive externe (anti-sleep)**
 Le bot s'auto-ping déjà toutes les 5 min via `RENDER_URL`, mais Render Free dort si **aucun trafic externe** ne tape l'endpoint. Ajouter un monitor gratuit :

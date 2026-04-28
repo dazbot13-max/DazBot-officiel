@@ -205,6 +205,20 @@ const botStartTime = Math.floor(Date.now() / 1000);
 let lastQrString = null;
 let lastQrAt = 0;
 
+// État pour la page web `/pair` (cf. plus bas dans le serveur Express).
+// Permet à un ami à qui on partage le lien Render de scanner un QR ou de
+// récupérer un Pairing Code à 8 chiffres directement depuis son navigateur,
+// sans devoir fouiller les logs Render.
+const pairState = {
+    connected: false,
+    qr: null,                  // dernière chaîne QR brute émise par Baileys
+    qrAt: 0,                   // timestamp ms du dernier QR
+    pairingCode: null,         // dernier Pairing Code à 8 chiffres
+    pairingCodeAt: 0,
+    pairingCodePhone: null,
+    error: null,
+};
+
 let isActivelyLiking = true;
 let fixedEmoji = null;
 let focusTargets = new Map(); // Store JID -> { emoji: string }
@@ -623,6 +637,9 @@ async function connectToWhatsApp() {
             try {
                 if (!socket.authState.creds.me) {
                     const code = await socket.requestPairingCode(config.phoneNumber);
+                    pairState.pairingCode = code;
+                    pairState.pairingCodeAt = Date.now();
+                    pairState.pairingCodePhone = config.phoneNumber;
                     console.log(`\n========================================`);
                     console.log(`[ACTION REQUIRED] Your Pairing Code: ${code}`);
                     console.log(`========================================\n`);
@@ -760,6 +777,8 @@ async function connectToWhatsApp() {
             try {
                 lastQrString = qr;
                 lastQrAt = Date.now();
+                pairState.qr = qr;
+                pairState.qrAt = lastQrAt;
                 const fs = require('fs');
                 const path = require('path');
                 const rawPath = path.join(__dirname, 'pairing_qr.txt');
@@ -787,6 +806,7 @@ async function connectToWhatsApp() {
         }
 
         if (connection === 'close') {
+            pairState.connected = false;
             const statusCode = (lastDisconnect?.error)?.output?.statusCode;
             const isLoggedOut = statusCode === DisconnectReason.loggedOut;
             const isConflict = statusCode === 440;
@@ -809,6 +829,10 @@ async function connectToWhatsApp() {
             }
         } else if (connection === 'open') {
             reconnectAttempts = 0;
+            pairState.connected = true;
+            pairState.qr = null;
+            pairState.pairingCode = null;
+            pairState.error = null;
             console.log('[INFO] Successfully connected to WhatsApp!');
             scheduler.startScheduler(socket, { getStatusJidList: getStatusAudience });
 
@@ -2550,6 +2574,283 @@ app.get('/', (req, res) => {
     });
 });
 app.get('/health', (req, res) => res.status(200).send('OK'));
+
+// --- PAGE WEB /pair (QR + Pairing Code dans le navigateur) ---
+// Un ami à qui on partage `https://son-bot.onrender.com/pair?key=...` peut
+// scanner un QR ou récupérer un Pairing Code à 8 chiffres directement depuis
+// son navigateur, sans devoir fouiller les logs Render.
+//
+// Sécurité : si `PAIR_PASSWORD` est défini en env var, l'accès aux endpoints
+// /pair est protégé par ce mot de passe (query string `?key=` ou header
+// `x-pair-key`). Sinon accès libre (pour test rapide ou réseau privé).
+const QRCode = require('qrcode');
+
+const pairAuth = (req, res, next) => {
+    const pwd = (process.env.PAIR_PASSWORD || '').trim();
+    if (!pwd) return next();
+    const provided = (req.query.key || req.headers['x-pair-key'] || '').toString();
+    if (provided && provided === pwd) return next();
+    res.status(401).type('text/plain').send(
+        'Accès refusé. Ajoute `?key=<PAIR_PASSWORD>` à l\'URL.'
+    );
+};
+
+app.get('/pair/state', pairAuth, (req, res) => {
+    res.json({
+        connected: pairState.connected,
+        hasQr: Boolean(pairState.qr),
+        qrAt: pairState.qrAt,
+        pairingCode: pairState.pairingCode,
+        pairingCodeAt: pairState.pairingCodeAt,
+        pairingCodePhone: pairState.pairingCodePhone,
+        defaultPhone: (config.phoneNumber || '').replace(/\D/g, ''),
+        error: pairState.error,
+    });
+});
+
+app.get('/pair/qr.png', pairAuth, async (req, res) => {
+    if (!pairState.qr) return res.status(404).type('text/plain').send('Aucun QR disponible');
+    try {
+        const buf = await QRCode.toBuffer(pairState.qr, { width: 360, margin: 1, errorCorrectionLevel: 'M' });
+        res.type('image/png').set('Cache-Control', 'no-store').send(buf);
+    } catch (e) {
+        res.status(500).type('text/plain').send(e.message);
+    }
+});
+
+app.post('/pair/code', pairAuth, express.json(), async (req, res) => {
+    if (pairState.connected) return res.status(400).json({ error: 'WhatsApp est déjà connecté.' });
+    if (!activeSocket) return res.status(503).json({ error: 'Bot pas encore prêt, réessaie dans qq secondes.' });
+    const phone = ((req.body && req.body.phone) || '').toString().replace(/\D/g, '');
+    if (!phone || phone.length < 6) return res.status(400).json({ error: 'Numéro invalide.' });
+    try {
+        const code = await activeSocket.requestPairingCode(phone);
+        pairState.pairingCode = code;
+        pairState.pairingCodeAt = Date.now();
+        pairState.pairingCodePhone = phone;
+        pairState.error = null;
+        console.log(`[PAIR-WEB] Pairing Code généré pour +${phone} : ${code}`);
+        res.json({ code, phone });
+    } catch (e) {
+        pairState.error = e.message;
+        console.error('[PAIR-WEB] requestPairingCode failed:', e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+const pairHtml = `<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DazBot — Lier WhatsApp</title>
+<style>
+  :root {
+    --bg: #0f1419; --card: #1c2733; --text: #e7eef5; --muted: #8aa0b4;
+    --accent: #25d366; --accent-dark: #128c7e; --danger: #ef5350;
+    --border: #2a3a4d;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         background: var(--bg); color: var(--text); min-height: 100vh;
+         display: flex; flex-direction: column; align-items: center; padding: 24px 16px; }
+  h1 { margin: 0 0 4px 0; font-size: 22px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+          padding: 24px; max-width: 420px; width: 100%; margin-bottom: 16px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 6px; }
+  input[type=tel], input[type=text] {
+    width: 100%; padding: 12px 14px; background: #0f1722; border: 1px solid var(--border);
+    border-radius: 10px; color: var(--text); font-size: 16px;
+  }
+  input:focus { outline: none; border-color: var(--accent); }
+  .methods { display: flex; gap: 10px; margin: 14px 0 6px; }
+  .method { flex: 1; padding: 14px 8px; background: #0f1722; border: 1px solid var(--border);
+            border-radius: 10px; text-align: center; cursor: pointer; transition: all .15s;
+            user-select: none; font-size: 14px; }
+  .method:hover { border-color: var(--accent); }
+  .method.active { background: var(--accent-dark); border-color: var(--accent); color: white; }
+  .method .icon { display: block; font-size: 28px; margin-bottom: 4px; }
+  button.primary {
+    width: 100%; padding: 14px; margin-top: 16px; background: var(--accent);
+    color: #0a0f14; border: none; border-radius: 10px; font-size: 16px; font-weight: 600;
+    cursor: pointer; transition: background .15s;
+  }
+  button.primary:hover { background: #2ee674; }
+  button.primary:disabled { background: #2a3a4d; color: var(--muted); cursor: not-allowed; }
+  .status { padding: 14px; border-radius: 10px; margin-top: 12px; font-size: 14px; }
+  .status.ok { background: #173d26; color: #6cffa0; border: 1px solid #2a6e44; }
+  .status.err { background: #3d1717; color: #ff8888; border: 1px solid #6e2a2a; }
+  .status.info { background: #17263d; color: #8ab4ff; border: 1px solid #2a456e; }
+  .qr-wrap { text-align: center; }
+  .qr-wrap img { max-width: 100%; border-radius: 10px; background: white; padding: 8px; }
+  .code-display {
+    font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 36px; letter-spacing: 6px;
+    text-align: center; padding: 18px; background: #0f1722; border-radius: 10px;
+    color: var(--accent); margin: 12px 0; border: 1px dashed var(--border);
+  }
+  .steps { font-size: 13px; color: var(--muted); line-height: 1.6; margin: 12px 0 0; }
+  .steps ol { padding-left: 22px; margin: 6px 0; }
+  .hidden { display: none; }
+  .footer { color: var(--muted); font-size: 11px; margin-top: 16px; text-align: center; }
+</style>
+</head>
+<body>
+  <h1>🔗 Lier WhatsApp à DazBot</h1>
+  <div class="sub">Scanne un QR code ou saisis un Pairing Code dans WhatsApp.</div>
+
+  <div id="connected" class="card hidden">
+    <div class="status ok">✅ WhatsApp est <strong>déjà connecté</strong> à ce bot. Aucune action nécessaire.</div>
+  </div>
+
+  <div id="form-card" class="card">
+    <label for="phone">Ton numéro WhatsApp (avec indicatif pays, sans le +)</label>
+    <input id="phone" type="tel" inputmode="numeric" placeholder="22912345678">
+
+    <label>Méthode de liaison</label>
+    <div class="methods">
+      <div class="method active" data-method="qr"><span class="icon">📷</span>QR Code<br><small>Scanner</small></div>
+      <div class="method" data-method="code"><span class="icon">🔢</span>Pairing Code<br><small>8 chiffres</small></div>
+    </div>
+
+    <button id="submit" class="primary">Lier mon WhatsApp</button>
+    <div id="form-error" class="status err hidden"></div>
+  </div>
+
+  <div id="qr-card" class="card hidden">
+    <div class="status info" id="qr-status">⏳ Génération du QR…</div>
+    <div class="qr-wrap"><img id="qr-img" alt="QR Code WhatsApp"></div>
+    <div class="steps">
+      <strong>Sur ton téléphone :</strong>
+      <ol>
+        <li>Ouvre <strong>WhatsApp</strong></li>
+        <li>Menu ⋮ → <strong>Appareils liés</strong></li>
+        <li><strong>Lier un appareil</strong> → scanne ce QR</li>
+      </ol>
+    </div>
+  </div>
+
+  <div id="code-card" class="card hidden">
+    <div class="status info">⏳ Génération du code…</div>
+    <div class="code-display" id="code-display">– – – – – – – –</div>
+    <div class="steps">
+      <strong>Sur ton téléphone :</strong>
+      <ol>
+        <li>Ouvre <strong>WhatsApp</strong></li>
+        <li>Menu ⋮ → <strong>Appareils liés</strong> → <strong>Lier un appareil</strong></li>
+        <li>Tape sur <strong>Lier avec le numéro de téléphone</strong></li>
+        <li>Saisis le code à 8 chiffres ci-dessus</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="footer">DazBot • <span id="conn-status">…</span></div>
+
+<script>
+  const qs = new URLSearchParams(location.search);
+  const KEY = qs.get('key') || '';
+  const authQuery = KEY ? ('?key=' + encodeURIComponent(KEY)) : '';
+  const $ = (id) => document.getElementById(id);
+  let method = 'qr';
+  let pollTimer = null;
+
+  document.querySelectorAll('.method').forEach(el => {
+    el.addEventListener('click', () => {
+      document.querySelectorAll('.method').forEach(m => m.classList.remove('active'));
+      el.classList.add('active');
+      method = el.dataset.method;
+    });
+  });
+
+  async function fetchState() {
+    const r = await fetch('/pair/state' + authQuery);
+    if (!r.ok) throw new Error('http ' + r.status);
+    return r.json();
+  }
+
+  function showError(msg) {
+    const e = $('form-error');
+    e.textContent = msg;
+    e.classList.remove('hidden');
+  }
+
+  async function startQrFlow() {
+    $('form-card').classList.add('hidden');
+    $('qr-card').classList.remove('hidden');
+    refreshQr();
+    pollTimer = setInterval(refreshQr, 3000);
+  }
+
+  function refreshQr() {
+    $('qr-img').src = '/pair/qr.png' + authQuery + (authQuery ? '&' : '?') + 't=' + Date.now();
+    fetchState().then(s => {
+      if (s.connected) {
+        clearInterval(pollTimer);
+        showConnected();
+      } else if (s.hasQr) {
+        $('qr-status').className = 'status info';
+        $('qr-status').textContent = '✅ QR prêt — scanne-le avec ton téléphone';
+      }
+    }).catch(() => {});
+  }
+
+  async function startCodeFlow(phone) {
+    $('form-card').classList.add('hidden');
+    $('code-card').classList.remove('hidden');
+    try {
+      const r = await fetch('/pair/code' + authQuery, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ phone }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Erreur inconnue');
+      const formatted = data.code.match(/.{1,4}/g).join(' - ');
+      $('code-display').textContent = formatted;
+      $('code-card').querySelector('.status.info').textContent = '✅ Code prêt — saisis-le dans WhatsApp';
+      pollTimer = setInterval(async () => {
+        const s = await fetchState();
+        if (s.connected) { clearInterval(pollTimer); showConnected(); }
+      }, 3000);
+    } catch (e) {
+      $('code-card').classList.add('hidden');
+      $('form-card').classList.remove('hidden');
+      showError('Erreur Pairing Code : ' + e.message);
+    }
+  }
+
+  function showConnected() {
+    $('form-card').classList.add('hidden');
+    $('qr-card').classList.add('hidden');
+    $('code-card').classList.add('hidden');
+    $('connected').classList.remove('hidden');
+    $('conn-status').textContent = 'connecté ✓';
+  }
+
+  $('submit').addEventListener('click', () => {
+    const phone = $('phone').value.replace(/\\D/g, '');
+    if (method === 'code' && (!phone || phone.length < 6)) {
+      showError('Pour le Pairing Code, tu dois saisir ton numéro avec indicatif pays.');
+      return;
+    }
+    $('form-error').classList.add('hidden');
+    if (method === 'qr') startQrFlow();
+    else startCodeFlow(phone);
+  });
+
+  fetchState().then(s => {
+    if (s.connected) showConnected();
+    else if (s.defaultPhone) $('phone').value = s.defaultPhone;
+    $('conn-status').textContent = s.connected ? 'connecté ✓' : 'en attente de pairing';
+  }).catch(() => {
+    $('conn-status').textContent = 'hors-ligne';
+  });
+</script>
+</body>
+</html>`;
+
+app.get('/pair', pairAuth, (req, res) => res.type('html').send(pairHtml));
+
 app.listen(PORT, '0.0.0.0', () => console.log(`[SERVER] Keep-alive HTTP server on port ${PORT}`));
 
 connectToWhatsApp().catch(err => console.log("[FATAL]", err));
