@@ -15,6 +15,29 @@ const config = {
     // Set to true to automatically like your own posted statuses
     likeMyOwnStatus: true,
 
+    // Active la lecture + réaction automatique aux statuts WhatsApp des contacts.
+    // Quand `true`, le bot envoie une présence "en ligne", marque le statut comme
+    // lu, puis envoie un emoji aléatoire (cf. `reactionEmojis`). Très utile en
+    // usage normal, mais juste après un re-pairing les sessions Signal des
+    // contacts sont obsolètes : chaque réaction génère un "En attente de ce
+    // message" chez eux. Mettre à `false` (ou env var `STATUS_AUTO_REACT=false`)
+    // pour désactiver le temps que les sessions se renégocient.
+    statusAutoReactEnabled: true,
+
+    // Envoie un DOUBLON de la réaction directement dans le chat privé du
+    // posteur du statut. Astuce historique pour déclencher une notif mobile
+    // "a réagi à votre statut" sur le téléphone du posteur.
+    //
+    // PAR DÉFAUT (false) : aucun doublon n'est envoyé, à personne. La
+    // réaction broadcast suffit pour que le like soit visible dans les
+    // "Vues du statut" du posteur. Aucun "En attente de ce message"
+    // chez les contacts post-re-pairing.
+    //
+    // Mettre `true` (ou env `STATUS_REACT_PRIVATE_NOTIFY=true`) pour
+    // réactiver le doublon vers tous les posteurs (génère la notif push
+    // sur leur mobile mais peut spammer si sessions désynchronisées).
+    statusReactPrivateNotify: false,
+
     // If whitelist is not empty, the bot will ONLY react to statuses from these numbers.
     // Format must be: "COUNTRY_CODE_NUMBER@s.whatsapp.net"
     // e.g., ["1234567890@s.whatsapp.net"]
@@ -146,21 +169,28 @@ const config = {
 //   OWNER_NUMBER=22912345678     (numéro du propriétaire affiché)
 //   OWNER_NAME=Jean              (nom affiché dans la bannière)
 //   USE_PAIRING_CODE=true        (true=Pairing Code, false=QR)
+//   STATUS_AUTO_REACT=false      (désactive la lecture/réaction auto aux statuts)
+//   STATUS_REACT_PRIVATE_NOTIFY=true   (envoie un doublon de la réaction dans
+//                                       le chat privé du posteur — défaut
+//                                       false : génère du spam "En attente"
+//                                       chez les contacts post-re-pairing)
 //   BOT_ID=ami_jean              (préfixe Supabase si table partagée)
 //   SUPABASE_URL=https://...
 //   SUPABASE_KEY=...
 //   RENDER_URL=https://mon-bot.onrender.com
 //   TZ=Africa/Porto-Novo
 const envOverrides = {
-    phoneNumber:     process.env.PHONE_NUMBER,
-    ownerNumber:     process.env.OWNER_NUMBER,
-    ownerName:       process.env.OWNER_NAME,
-    usePairingCode:  process.env.USE_PAIRING_CODE,
-    botId:           process.env.BOT_ID,
-    supabaseUrl:     process.env.SUPABASE_URL,
-    supabaseKey:     process.env.SUPABASE_KEY,
-    renderUrl:       process.env.RENDER_URL,
-    timezone:        process.env.TZ,
+    phoneNumber:            process.env.PHONE_NUMBER,
+    ownerNumber:            process.env.OWNER_NUMBER,
+    ownerName:              process.env.OWNER_NAME,
+    usePairingCode:         process.env.USE_PAIRING_CODE,
+    statusAutoReactEnabled:    process.env.STATUS_AUTO_REACT,
+    statusReactPrivateNotify:  process.env.STATUS_REACT_PRIVATE_NOTIFY,
+    botId:                  process.env.BOT_ID,
+    supabaseUrl:            process.env.SUPABASE_URL,
+    supabaseKey:            process.env.SUPABASE_KEY,
+    renderUrl:              process.env.RENDER_URL,
+    timezone:               process.env.TZ,
 };
 
 for (const [key, raw] of Object.entries(envOverrides)) {

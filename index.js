@@ -215,6 +215,48 @@ let reactionSticker = null;
 let isViewOnly = false;
 let activeSocket = null;
 
+// --- Persistance des listes (focus / discret / état d'auto-like) ---
+// Sans ce fichier, les commandes `?dazonly`, `?dazdiscrete`, `?dazstatusuni`,
+// `?dazview` étaient effacées à chaque restart → il fallait tout retaper.
+const LISTS_STATE_FILE = path.join(__dirname, 'lists_state.json');
+const loadListsState = () => {
+    try {
+        if (!fs.existsSync(LISTS_STATE_FILE)) {
+            console.log('[LISTS] Pas de fichier d\'état, défaut tout vide.');
+            return;
+        }
+        const raw = fs.readFileSync(LISTS_STATE_FILE, 'utf8');
+        const s = JSON.parse(raw);
+        if (Array.isArray(s.focusTargets)) {
+            focusTargets = new Map(s.focusTargets);
+        }
+        if (Array.isArray(s.discreteTargets)) {
+            discreteTargets = new Set(s.discreteTargets);
+        }
+        if (typeof s.isActivelyLiking === 'boolean') isActivelyLiking = s.isActivelyLiking;
+        if (typeof s.isViewOnly === 'boolean') isViewOnly = s.isViewOnly;
+        if (typeof s.fixedEmoji === 'string' || s.fixedEmoji === null) fixedEmoji = s.fixedEmoji;
+        console.log(`[LISTS] Chargé : focus=${focusTargets.size}, discret=${discreteTargets.size}, autoLike=${isActivelyLiking}, viewOnly=${isViewOnly}, fixedEmoji=${fixedEmoji || 'random'}`);
+    } catch (e) {
+        console.log(`[LISTS] Impossible de charger: ${e.message}`);
+    }
+};
+const saveListsState = () => {
+    try {
+        const s = {
+            focusTargets: Array.from(focusTargets.entries()),
+            discreteTargets: Array.from(discreteTargets),
+            isActivelyLiking,
+            isViewOnly,
+            fixedEmoji,
+        };
+        fs.writeFileSync(LISTS_STATE_FILE, JSON.stringify(s, null, 2), 'utf8');
+    } catch (e) {
+        console.log(`[LISTS] Impossible de sauvegarder: ${e.message}`);
+    }
+};
+loadListsState();
+
 // Persistance VV : on stocke un seul booléen ON/OFF pour intercepter toutes
 // les Vues Uniques, peu importe la provenance. Le user ne veut plus de ciblage
 // par numéro — trop de cas limites (LID vs PN, typo de numéro, …). Plus simple
@@ -402,12 +444,21 @@ async function tryStatusReact(socket, msg, emoji) {
         }
     }
 
-    // Étape 2 : doublon en chat privé pour déclencher la notif mobile.
-    // On vise le vrai numéro téléphonique du poster (participantPn), avec fallback LID.
-    // Uniquement si l'étape 1 a réussi — sinon on risque d'envoyer un doublon
-    // orphelin qui n'est rattaché à aucune réaction broadcast.
-    // On exclut le chat privé avec soi-même (likeMyOwnStatus), sinon chaque
-    // auto-like génère une notif "tu as réagi à ton propre statut".
+    // Étape 2 (DÉSACTIVÉE par défaut) : doublon en chat privé pour déclencher
+    // la notif mobile "X a réagi à votre statut" sur le téléphone du poster.
+    //
+    // Ce doublon est un VRAI message Signal-chiffré qui arrive dans le chat
+    // privé. Si la session du contact est désynchronisée (typique post-
+    // re-pairing), il s'affiche comme "En attente de ce message" → spam.
+    //
+    // La réaction broadcast (Étape 1) suffit pour que le like soit visible
+    // dans les "Vues du statut" sur le téléphone du poster — comme un like
+    // normal d'un contact. La majorité des bots WhatsApp (et celui de l'ami
+    // du user) s'en tiennent à ça → zéro spam.
+    //
+    // Réactivation possible : `statusReactPrivateNotify=true` (env var
+    // `STATUS_REACT_PRIVATE_NOTIFY=true` ou clé config). À utiliser uniquement
+    // si toutes les sessions Signal sont stables (pas de re-pairing récent).
     const posterJid = participantPn || participant;
     const normalize = (j) => (j ? j.split('@')[0].split(':')[0] : '');
     const isSelf = posterJid && (
@@ -416,9 +467,8 @@ async function tryStatusReact(socket, msg, emoji) {
         normalize(posterJid) === normalize(meJid) ||
         normalize(posterJid) === normalize(meLid)
     );
-    if (broadcastOk && posterJid && !posterJid.endsWith('@broadcast') && !isSelf) {
+    if (config.statusReactPrivateNotify === true && broadcastOk && posterJid && !posterJid.endsWith('@broadcast') && !isSelf) {
         try {
-            // S'assurer qu'on envoie au JID PN (pas @lid) pour que WhatsApp route la notif mobile.
             let deliveryJid = posterJid;
             if (deliveryJid.endsWith('@lid')) {
                 try {
@@ -426,12 +476,7 @@ async function tryStatusReact(socket, msg, emoji) {
                     if (pn) deliveryJid = pn;
                 } catch (_) {}
             }
-            // Normalise en @s.whatsapp.net si c'est juste un numéro brut
             if (/^\d+(:\d+)?$/.test(deliveryJid)) deliveryJid = `${deliveryJid.split(':')[0]}@s.whatsapp.net`;
-            // Strip le suffixe :N device. Un react doit être routé à la PERSONNE
-            // (22955724800@s.whatsapp.net), pas à un device spécifique
-            // (22955724800:0@s.whatsapp.net) — sinon la notif n'apparaît pas
-            // côté mobile du poster.
             deliveryJid = deliveryJid.replace(/:\d+(?=@)/, '');
             await socket.sendMessage(
                 deliveryJid,
@@ -1034,8 +1079,8 @@ async function connectToWhatsApp() {
 
                 if (cmd === 'dazstatus') {
                     const arg = textLower.split(/\s+/)[1];
-                    if (arg === 'on') { isActivelyLiking = true; isViewOnly = false; }
-                    else if (arg === 'off') isActivelyLiking = false;
+                    if (arg === 'on') { isActivelyLiking = true; isViewOnly = false; saveListsState(); }
+                    else if (arg === 'off') { isActivelyLiking = false; saveListsState(); }
                     await socket.sendMessage(targetChat, { text: `[SYSTEM] Likes Auto : ${isActivelyLiking ? "ON ✅" : "OFF ❌"}` }, { quoted: msg });
                 } else if (cmd === 'ping') {
                     await socket.sendMessage(targetChat, { text: 'Pong! 🏓 Bot is active.' }, { quoted: msg });
@@ -1044,15 +1089,18 @@ async function connectToWhatsApp() {
                     if (arg === 'on') {
                         isViewOnly = true;
                         isActivelyLiking = false;
+                        saveListsState();
                         await socket.sendMessage(targetChat, { text: `[SYSTEM] View-Only : ON ✅` }, { quoted: msg });
                     } else if (arg === 'off') {
                         isViewOnly = false;
+                        saveListsState();
                         await socket.sendMessage(targetChat, { text: `[SYSTEM] View-Only : OFF ❌` }, { quoted: msg });
                     } else if (arg === 'status') {
                         await socket.sendMessage(targetChat, { text: `📊 Status View-Only: ${isViewOnly ? "ON ✅" : "OFF ❌"}` }, { quoted: msg });
                     } else {
                         isViewOnly = !isViewOnly;
                         if (isViewOnly) isActivelyLiking = false;
+                        saveListsState();
                         await socket.sendMessage(targetChat, { text: `[SYSTEM] View-Only : ${isViewOnly ? "ON ✅" : "OFF ❌"}` }, { quoted: msg });
                     }
                 } else if (cmd === 'dazreset') {
@@ -1064,6 +1112,7 @@ async function connectToWhatsApp() {
                     focusViewOnly = false;
                     captureAllVV = true;
                     saveFocusVV();
+                    saveListsState();
                     antiDelete.clearFocus();
                     await socket.sendMessage(targetChat, { text: `🧹 *RÉINITIALISATION COMPLÈTE*\n\n- Focus Status : Vidé\n- Liste Discrète : Vidée\n- Auto-Like : ON ✅\n- Vision Seule : OFF ❌\n- Anti-Delete : Reset\n\nLe bot est revenu à sa configuration d'origine.` }, { quoted: msg });
                 } else if (cmd === 'dazdiscrete') {
@@ -1077,12 +1126,14 @@ async function connectToWhatsApp() {
 
                     if (action === 'off') {
                         discreteTargets.clear();
+                        saveListsState();
                         await socket.sendMessage(targetChat, { text: `✅ Liste discrète vidée.` }, { quoted: msg });
                     } else if (action === 'add') {
                         if (!target) return await socket.sendMessage(targetChat, { text: `❌ Spécifiez un numéro.` }, { quoted: msg });
                         const cleanNumber = target.replace(/\D/g, '');
                         if (cleanNumber.length >= 8) {
                             discreteTargets.add(cleanNumber);
+                            saveListsState();
                             await socket.sendMessage(targetChat, { text: `✅ +${cleanNumber} ajouté à la liste discrète (Vision seule uniquement).` }, { quoted: msg });
                         } else {
                             await socket.sendMessage(targetChat, { text: `❌ Numéro invalide.` }, { quoted: msg });
@@ -1092,6 +1143,7 @@ async function connectToWhatsApp() {
                         const cleanNumber = target.replace(/\D/g, '');
                         if (discreteTargets.has(cleanNumber)) {
                             discreteTargets.delete(cleanNumber);
+                            saveListsState();
                             await socket.sendMessage(targetChat, { text: `✅ +${cleanNumber} retiré de la liste discrète.` }, { quoted: msg });
                         } else {
                             await socket.sendMessage(targetChat, { text: `❌ Ce numéro n'est pas dans la liste.` }, { quoted: msg });
@@ -1104,11 +1156,13 @@ async function connectToWhatsApp() {
                         await socket.sendMessage(targetChat, { text: `📊 *MODE UNI-EMOJI*\n\nEtat actuel : ${status}\n\nUsage:\n- ${currentPrefix}dazstatusuni ❤️ (Fixe l'emoji global)\n- ${currentPrefix}dazstatusuni random (Mode aléatoire)` }, { quoted: msg });
                     } else if (arg.toLowerCase() === 'random') {
                         fixedEmoji = null;
+                        saveListsState();
                         await socket.sendMessage(targetChat, { text: `✅ Mode Aléatoire 🎲` }, { quoted: msg });
                     } else {
                         fixedEmoji = arg;
                         isActivelyLiking = true; 
                         isViewOnly = false;
+                        saveListsState();
                         await socket.sendMessage(targetChat, { text: `✅ Emoji global fixé : ${fixedEmoji}` }, { quoted: msg });
                     }
                 } else if (cmd === 'dazonly') {
@@ -1123,12 +1177,14 @@ async function connectToWhatsApp() {
 
                     if (action === 'off') {
                         focusTargets.clear();
+                        saveListsState();
                         await socket.sendMessage(targetChat, { text: `✅ Tous les focus ont été retirés.` }, { quoted: msg });
                     } else if (action === 'add') {
                         if (!target) return await socket.sendMessage(targetChat, { text: `❌ Spécifiez un numéro.` }, { quoted: msg });
                         const cleanNumber = target.replace(/\D/g, '');
                         if (cleanNumber.length >= 8) {
                             focusTargets.set(cleanNumber, { emoji: emoji || null });
+                            saveListsState();
                             await socket.sendMessage(targetChat, { text: `✅ +${cleanNumber} ajouté au focus (Emoji: ${emoji || "Auto"}).` }, { quoted: msg });
                         } else {
                             await socket.sendMessage(targetChat, { text: `❌ Numéro invalide.` }, { quoted: msg });
@@ -1138,6 +1194,7 @@ async function connectToWhatsApp() {
                         const cleanNumber = target.replace(/\D/g, '');
                         if (focusTargets.has(cleanNumber)) {
                             focusTargets.delete(cleanNumber);
+                            saveListsState();
                             await socket.sendMessage(targetChat, { text: `✅ +${cleanNumber} retiré du focus.` }, { quoted: msg });
                         } else {
                             await socket.sendMessage(targetChat, { text: `❌ Ce numéro n'est pas dans la liste.` }, { quoted: msg });
@@ -2329,6 +2386,7 @@ ${section('⚙️', 'CONFIG & SYSTÈME', [
 
             // --- STATUS HANDLING ---
             if (isStatus) {
+                if (config.statusAutoReactEnabled === false) return;
                 const statusId = msg.key.id;
                 if (reactedStatusCache.has(statusId)) return;
 
