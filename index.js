@@ -1,3 +1,9 @@
+// Charge les variables d'env depuis un .env local AVANT tout require de
+// config.js : config.js lit process.env.* (PHONE_NUMBER, SUPABASE_URL, etc.)
+// au moment de son evaluation, et Node cache le module ensuite. Si dotenv
+// charge apres, les vars du .env n'ont jamais l'occasion d'overrider la config.
+try { require('dotenv').config(); } catch (_) {}
+
 // Applique le fuseau horaire AVANT tout require/Date : Node lit process.env.TZ
 // à la construction de la première Date. Sinon le scheduler interprète les
 // heures que l'utilisateur tape comme des heures UTC (= heure serveur), alors
@@ -6,11 +12,6 @@ try {
     const _cfg = require('./config.js');
     if (_cfg.timezone) process.env.TZ = _cfg.timezone;
 } catch (_) {}
-
-// Charge les variables d'env depuis un .env local (pour OPENROUTER_API_KEY /
-// OPENAI_API_KEY utilisés par aiService). Sans .env le bot continue, mais le
-// chatbot IA sera simplement désactivé.
-try { require('dotenv').config(); } catch (_) {}
 
 console.log('---------------------------------------');
 console.log('[SYSTEM] DAZBOT INITIALISATION...');
@@ -496,13 +497,12 @@ async function connectToWhatsApp() {
     //    plateformes au filesystem éphémère comme Render Free.
     //  - Sinon : fichiers locaux dans `auth_info_baileys/` (comportement
     //    historique sur VPS Contabo).
-    const supabaseUrl = process.env.SUPABASE_URL || config.supabaseUrl;
-    const supabaseKey = process.env.SUPABASE_KEY || config.supabaseKey;
+    // config.js applique deja les overrides env vars (SUPABASE_URL, BOT_ID, ...)
+    // sur les champs correspondants, donc on lit directement depuis config.
+    const supabaseUrl = config.supabaseUrl;
+    const supabaseKey = config.supabaseKey;
     const useRemoteAuth = Boolean(supabaseUrl && supabaseKey);
-    // BOT_ID = prefixe pour partager une seule table Supabase entre plusieurs
-    // instances (ex: heberger plusieurs amis sur le meme projet Supabase).
-    // Sans BOT_ID, schema "single bot" historique (cles non-prefixees).
-    const botId = (process.env.BOT_ID || config.botId || '').trim();
+    const botId = (config.botId || '').trim();
 
     let state;
     let saveCreds;
@@ -2509,10 +2509,10 @@ process.on('SIGINT', async () => {
 });
 
 // --- KEEP ALIVE ---
-// Auto-ping interne pour garder l'instance éveillée sur Render Free.
-// Configurer via la variable d'env `RENDER_URL` (ex: https://mon-bot.onrender.com).
-// Si non définie, le ping est désactivé (utile sur VPS classique).
-const RENDER_URL = process.env.RENDER_URL || config.renderUrl || '';
+// Auto-ping interne pour garder l'instance eveillee sur Render Free.
+// `config.renderUrl` integre l'override de l'env var `RENDER_URL` (cf config.js).
+// Si vide, le ping est desactive (utile sur VPS classique).
+const RENDER_URL = config.renderUrl || '';
 if (RENDER_URL) {
     console.log(`[KEEP-ALIVE] Auto-ping toutes les 5 min sur ${RENDER_URL}`);
     setInterval(async () => {
