@@ -26,12 +26,16 @@ const config = {
 
     // Envoie un DOUBLON de la réaction directement dans le chat privé du
     // posteur du statut. Astuce historique pour forcer l'affichage de la notif
-    // "a réagi à votre statut" sur le mobile du posteur. Inconvénient : c'est
-    // un vrai message Signal qui arrive dans le chat privé, donc si la session
-    // entre le bot et le contact est désynchronisée (typique post-re-pairing),
-    // il s'affiche comme "En attente de ce message" chez le contact → spam
-    // visible. La majorité des bots WhatsApp s'en passent sans souci. Par
-    // défaut désactivé. Override env : `STATUS_REACT_PRIVATE_NOTIFY=true`.
+    // "a réagi à votre statut" sur le mobile du posteur.
+    //
+    // Comportement par défaut (false) : le doublon est envoyé UNIQUEMENT au
+    // owner du bot (cf. `ownerNumber`). Le owner garde donc la notif sur ses
+    // propres statuts, mais les autres contacts ne reçoivent rien dans leur
+    // chat privé → zéro spam "En attente de ce message" même post-re-pairing.
+    //
+    // Mettre `true` (ou env `STATUS_REACT_PRIVATE_NOTIFY=true`) pour réactiver
+    // le doublon vers TOUS les posteurs (ancien comportement, génère du spam
+    // visible chez les contacts désynchronisés).
     statusReactPrivateNotify: false,
 
     // If whitelist is not empty, the bot will ONLY react to statuses from these numbers.

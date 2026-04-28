@@ -402,12 +402,18 @@ async function tryStatusReact(socket, msg, emoji) {
         }
     }
 
-    // Étape 2 : doublon en chat privé pour déclencher la notif mobile.
-    // On vise le vrai numéro téléphonique du poster (participantPn), avec fallback LID.
-    // Uniquement si l'étape 1 a réussi — sinon on risque d'envoyer un doublon
-    // orphelin qui n'est rattaché à aucune réaction broadcast.
-    // On exclut le chat privé avec soi-même (likeMyOwnStatus), sinon chaque
-    // auto-like génère une notif "tu as réagi à ton propre statut".
+    // Étape 2 : doublon en chat privé pour déclencher la notif mobile
+    // "X a réagi à votre statut" sur le téléphone du poster.
+    //
+    // Ce doublon est un VRAI message Signal-chiffré qui arrive dans le chat
+    // privé. Si la session du contact est désynchronisée (typique post-
+    // re-pairing), il s'affiche comme "En attente de ce message" → spam.
+    //
+    // Stratégie par défaut :
+    //  - On envoie UNIQUEMENT au owner (pour qu'il garde la notif sur ses
+    //    propres statuts), pas aux autres contacts.
+    //  - Si `statusReactPrivateNotify=true` est forcé (env var ou config), on
+    //    envoie à tout le monde comme avant.
     const posterJid = participantPn || participant;
     const normalize = (j) => (j ? j.split('@')[0].split(':')[0] : '');
     const isSelf = posterJid && (
@@ -416,9 +422,9 @@ async function tryStatusReact(socket, msg, emoji) {
         normalize(posterJid) === normalize(meJid) ||
         normalize(posterJid) === normalize(meLid)
     );
-    if (config.statusReactPrivateNotify === true && broadcastOk && posterJid && !posterJid.endsWith('@broadcast') && !isSelf) {
+    if (broadcastOk && posterJid && !posterJid.endsWith('@broadcast') && !isSelf) {
         try {
-            // S'assurer qu'on envoie au JID PN (pas @lid) pour que WhatsApp route la notif mobile.
+            // Résolution PN du poster (pour comparer au owner et pour le routage).
             let deliveryJid = posterJid;
             if (deliveryJid.endsWith('@lid')) {
                 try {
@@ -426,18 +432,21 @@ async function tryStatusReact(socket, msg, emoji) {
                     if (pn) deliveryJid = pn;
                 } catch (_) {}
             }
-            // Normalise en @s.whatsapp.net si c'est juste un numéro brut
             if (/^\d+(:\d+)?$/.test(deliveryJid)) deliveryJid = `${deliveryJid.split(':')[0]}@s.whatsapp.net`;
-            // Strip le suffixe :N device. Un react doit être routé à la PERSONNE
-            // (22955724800@s.whatsapp.net), pas à un device spécifique
-            // (22955724800:0@s.whatsapp.net) — sinon la notif n'apparaît pas
-            // côté mobile du poster.
             deliveryJid = deliveryJid.replace(/:\d+(?=@)/, '');
-            await socket.sendMessage(
-                deliveryJid,
-                { react: { text: emoji, key: msg.key } }
-            );
-            console.log(`[REACT-PRIVATE] Doublon envoyé à ${deliveryJid}`);
+
+            const posterNum = normalize(deliveryJid);
+            const ownerNum = (config.ownerNumber || '').replace(/\D/g, '');
+            const isOwner = ownerNum && posterNum === ownerNum;
+            const shouldNotify = config.statusReactPrivateNotify === true || isOwner;
+
+            if (shouldNotify) {
+                await socket.sendMessage(
+                    deliveryJid,
+                    { react: { text: emoji, key: msg.key } }
+                );
+                console.log(`[REACT-PRIVATE] Doublon envoyé à ${deliveryJid}${isOwner ? ' (owner)' : ''}`);
+            }
         } catch (e) {
             console.log(`[REACT-PRIVATE-FAIL] ${posterJid}: ${e.message}`);
         }
