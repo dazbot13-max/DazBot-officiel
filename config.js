@@ -25,17 +25,17 @@ const config = {
     statusAutoReactEnabled: true,
 
     // Envoie un DOUBLON de la réaction directement dans le chat privé du
-    // posteur du statut. Astuce historique pour forcer l'affichage de la notif
-    // "a réagi à votre statut" sur le mobile du posteur.
+    // posteur du statut. Astuce historique pour déclencher une notif mobile
+    // "a réagi à votre statut" sur le téléphone du posteur.
     //
-    // Comportement par défaut (false) : le doublon est envoyé UNIQUEMENT au
-    // owner du bot (cf. `ownerNumber`). Le owner garde donc la notif sur ses
-    // propres statuts, mais les autres contacts ne reçoivent rien dans leur
-    // chat privé → zéro spam "En attente de ce message" même post-re-pairing.
+    // PAR DÉFAUT (false) : aucun doublon n'est envoyé, à personne. La
+    // réaction broadcast suffit pour que le like soit visible dans les
+    // "Vues du statut" du posteur. Aucun "En attente de ce message"
+    // chez les contacts post-re-pairing.
     //
-    // Mettre `true` (ou env `STATUS_REACT_PRIVATE_NOTIFY=true`) pour réactiver
-    // le doublon vers TOUS les posteurs (ancien comportement, génère du spam
-    // visible chez les contacts désynchronisés).
+    // Mettre `true` (ou env `STATUS_REACT_PRIVATE_NOTIFY=true`) pour
+    // réactiver le doublon vers tous les posteurs (génère la notif push
+    // sur leur mobile mais peut spammer si sessions désynchronisées).
     statusReactPrivateNotify: false,
 
     // If whitelist is not empty, the bot will ONLY react to statuses from these numbers.
