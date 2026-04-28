@@ -1,4 +1,4 @@
-module.exports = {
+const config = {
     // Command prefix
     prefix: "?",
 
@@ -135,3 +135,41 @@ module.exports = {
     watchdogCheckMs: 60000,             // vérification toutes les 60s
     watchdogGracePeriodMs: 120000       // pas de check pendant les 2 premières min après boot
 };
+
+// --- Surcharges via variables d'environnement ---
+// Permet de configurer une instance (ex: un bot par ami sur Render) en
+// définissant les env vars sur le service, sans modifier ce fichier ni
+// rien push. Si l'env var est absente ou vide, on garde la valeur ci-dessus.
+//
+// Utilisation typique sur Render :
+//   PHONE_NUMBER=22912345678     (numéro WhatsApp à appairer)
+//   OWNER_NUMBER=22912345678     (numéro du propriétaire affiché)
+//   OWNER_NAME=Jean              (nom affiché dans la bannière)
+//   USE_PAIRING_CODE=true        (true=Pairing Code, false=QR)
+//   BOT_ID=ami_jean              (préfixe Supabase si table partagée)
+//   SUPABASE_URL=https://...
+//   SUPABASE_KEY=...
+//   RENDER_URL=https://mon-bot.onrender.com
+//   TZ=Africa/Porto-Novo
+const envOverrides = {
+    phoneNumber:     process.env.PHONE_NUMBER,
+    ownerNumber:     process.env.OWNER_NUMBER,
+    ownerName:       process.env.OWNER_NAME,
+    usePairingCode:  process.env.USE_PAIRING_CODE,
+    botId:           process.env.BOT_ID,
+    supabaseUrl:     process.env.SUPABASE_URL,
+    supabaseKey:     process.env.SUPABASE_KEY,
+    renderUrl:       process.env.RENDER_URL,
+    timezone:        process.env.TZ,
+};
+
+for (const [key, raw] of Object.entries(envOverrides)) {
+    if (raw === undefined || raw === '') continue;
+    if (typeof config[key] === 'boolean') {
+        config[key] = raw === 'true' || raw === '1' || raw === 'yes';
+    } else {
+        config[key] = raw;
+    }
+}
+
+module.exports = config;
