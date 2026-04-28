@@ -309,21 +309,57 @@ docker logs -f dazbot    # récup le pairing code au 1er démarrage
 
 **Volume obligatoire** pour `auth_info_baileys/` et `scheduled_tasks.json` sinon tu perds la session + les tâches à chaque rebuild.
 
-### Option 4 : Railway / Render / Fly.io
+### Option 4 : Render Free + Supabase (gratuit, recommandé pour un ami)
 
-Plateformes PaaS avec auto-déploiement depuis GitHub.
+Render Free a deux pièges : il **endort** le service après 15 min d'inactivité, et son **filesystem est éphémère** (effacé à chaque redéploiement). Le bot intègre désormais ce qu'il faut pour contourner les deux : un endpoint HTTP `/` pour le keep-alive, et un backend de session **Supabase** (Postgres) qui remplace `auth_info_baileys/`.
 
-**Railway :**
-1. [railway.app](https://railway.app) → New Project → Deploy from GitHub Repo
-2. Sélectionne `DazBot`
-3. Variables d'env : aucune requise (config dans `config.js`)
-4. Premier démarrage : regarde les logs pour le Pairing Code
-5. **Volume persistant** : attache un volume sur `/app/auth_info_baileys` pour garder la session entre les restarts
+**Étapes complètes (≈ 15 min) :**
 
-**Render :**
-Similaire, avec un "Background Worker" type et un Persistent Disk monté sur `/opt/render/project/src/auth_info_baileys`.
+**1. Créer un projet Supabase (stockage de session)**
+- [supabase.com](https://supabase.com) → New Project (plan Free, 500 Mo gratuits)
+- Une fois créé : **SQL Editor** → coller :
+  ```sql
+  CREATE TABLE whatsapp_auth (id text PRIMARY KEY, data jsonb);
+  ```
+- **Project Settings → API** : copier la `Project URL` et la `anon public key` (pas la `service_role`).
 
-**⚠️ Free tiers** : certaines plateformes endorment les bots inactifs — vérifie que le plan choisi permet un process toujours up.
+**2. Créer le service Render**
+- [render.com](https://render.com) → New + → **Web Service** (pas Background Worker, on a besoin d'un endpoint HTTP)
+- Connect au repo GitHub forké
+- Runtime : `Node`, Build Command : `npm install`, Start Command : `node index.js`
+- Plan : **Free**
+- **Environment Variables** :
+  | Variable | Valeur |
+  |---|---|
+  | `GEMINI_API_KEY` | clé Gemini (https://aistudio.google.com/apikey) |
+  | `SUPABASE_URL` | URL Supabase de l'étape 1 |
+  | `SUPABASE_KEY` | anon key Supabase de l'étape 1 |
+  | `RENDER_URL` | l'URL du service Render (visible après création, ex: `https://mon-bot.onrender.com`) |
+  | `TZ` | `Africa/Porto-Novo` (ou autre fuseau local) |
+
+**3. Premier démarrage (appairage)**
+- Dans `config.js` du fork, mettre `usePairingCode: true` et `phoneNumber: "229XXXXXXXX"` (ton numéro WhatsApp sans `+`).
+- Render redéploie tout seul après le push.
+- Onglet **Logs** Render → chercher `[ACTION REQUIRED] Your Pairing Code: XXXX-XXXX`.
+- Sur le téléphone : WhatsApp → Appareils liés → Lier un appareil avec un numéro → entrer le code.
+- La session est sauvée dans Supabase, plus aucun re-pairing nécessaire.
+
+**4. Configurer le keep-alive externe (anti-sleep)**
+Le bot s'auto-ping déjà toutes les 5 min via `RENDER_URL`, mais Render Free dort si **aucun trafic externe** ne tape l'endpoint. Ajouter un monitor gratuit :
+- [UptimeRobot](https://uptimerobot.com) → New Monitor → HTTP(s)
+- URL : `https://mon-bot.onrender.com/`
+- Interval : **5 min** (le minimum gratuit)
+
+**Limites du Free tier Render :**
+- 750h cumulées par mois (≈ 31 jours, donc tout juste si le bot tourne 24/7).
+- Cold start de ~30 s après un sleep — d'où l'importance du ping externe.
+- Si tu dépasses, le service reste off jusqu'au mois suivant.
+
+### Option 5 : Railway / Fly.io
+
+Railway (5 $/mois minimum depuis 2023) et Fly.io (free tier limité, carte bancaire requise) sont des alternatives. Configuration similaire à Render :
+- Variables d'env identiques (`SUPABASE_URL`, `SUPABASE_KEY`, etc.)
+- Persistent volume sur `/app/auth_info_baileys` si tu préfères les fichiers locaux à Supabase
 
 ### Prérequis communs
 
