@@ -39,7 +39,7 @@ module.exports = {
     // Numéro du propriétaire affiché dans le message de connexion (sans +).
     // Peut être différent du numéro d'appairage (phoneNumber) si tu veux
     // afficher un autre numéro de contact.
-    ownerNumber: "22955724800",
+    ownerNumber: "22947726871",
 
     // URL de la bannière envoyée à chaque connexion dans la discussion perso.
     // Laisse vide pour désactiver l'image (le bot enverra juste le texte).
@@ -61,8 +61,9 @@ module.exports = {
     antiDeleteChat: "", // Default destination for deleted messages
     // Sous-toggle : si false, les statuts supprimés sont ignorés tandis que les
     // messages privés/groupes restent récupérés. Contrôle via `?antidelete
-    // statut on|off` depuis WhatsApp.
-    antiDeleteStatusEnabled: true,
+    // statut on|off` depuis WhatsApp. Désactivé par défaut pour éviter de
+    // polluer la discussion perso avec les statuts supprimés (volume élevé).
+    antiDeleteStatusEnabled: false,
     // Groupes (JIDs complets `<id>@g.us`) dont on ignore les suppressions —
     // utile pour ne pas polluer certaines discussions avec des récups. Géré
     // depuis WhatsApp via `?antidelete skip add|remove|list|clear <jid>`.
