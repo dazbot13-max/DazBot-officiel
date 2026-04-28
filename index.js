@@ -31,6 +31,8 @@ const path = require('path');
 const config = require('./config.js');
 const NodeCache = require('node-cache');
 const express = require('express');
+const { createClient } = require('@supabase/supabase-js');
+const useSupabaseAuthState = require('./supabaseAuth.js');
 const antiDelete = require('./antidelete.js');
 const tagAll = require('./tagall.js');
 const screenshot = require('./screenshot.js');
@@ -488,9 +490,44 @@ function isAllowed(jid, msg) {
 }
 
 async function connectToWhatsApp() {
-    console.log('[INFO] Chargement de la session WhatsApp locale...');
+    // Choix du backend de session :
+    //  - Si SUPABASE_URL + SUPABASE_KEY (env ou config) : stockage distant dans
+    //    Postgres (table `whatsapp_auth`). Permet l'hébergement sur des
+    //    plateformes au filesystem éphémère comme Render Free.
+    //  - Sinon : fichiers locaux dans `auth_info_baileys/` (comportement
+    //    historique sur VPS Contabo).
+    const supabaseUrl = process.env.SUPABASE_URL || config.supabaseUrl;
+    const supabaseKey = process.env.SUPABASE_KEY || config.supabaseKey;
+    const useRemoteAuth = Boolean(supabaseUrl && supabaseKey);
+    // BOT_ID = prefixe pour partager une seule table Supabase entre plusieurs
+    // instances (ex: heberger plusieurs amis sur le meme projet Supabase).
+    // Sans BOT_ID, schema "single bot" historique (cles non-prefixees).
+    const botId = (process.env.BOT_ID || config.botId || '').trim();
+
+    let state;
+    let saveCreds;
     try {
-        const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+        if (useRemoteAuth) {
+            const tag = botId ? ` [BOT_ID=${botId}]` : '';
+            console.log(`[INFO] Chargement de la session WhatsApp depuis Supabase...${tag}`);
+            const supabase = createClient(supabaseUrl, supabaseKey, {
+                auth: { persistSession: false },
+            });
+            const remote = await useSupabaseAuthState(supabase, { botId });
+            state = remote.state;
+            saveCreds = remote.saveCreds;
+        } else {
+            console.log('[INFO] Chargement de la session WhatsApp locale...');
+            const local = await useMultiFileAuthState('auth_info_baileys');
+            state = local.state;
+            saveCreds = local.saveCreds;
+        }
+    } catch (err) {
+        console.error('[FATAL] Impossible de charger la session WhatsApp :', err.message);
+        throw err;
+    }
+
+    try {
         const { version, isLatest } = await fetchLatestBaileysVersion();
         console.log(`[INFO] Using WhatsApp v${version.join('.')}, isLatest: ${isLatest}`);
 
@@ -2442,10 +2479,20 @@ ${section('⚙️', 'CONFIG & SYSTÈME', [
 }
 
 // --- EXPRESS SERVER ---
+// Mini serveur HTTP utilisé comme health-check par les plateformes type
+// Render / Railway / Fly. Sans cet endpoint, Render Free considère le service
+// comme inactif et l'endort après 15 min, ce qui casse la connexion WhatsApp.
 const app = express();
 const PORT = process.env.PORT || 3000;
-app.get('/', (req, res) => res.status(200).send('OK'));
-app.listen(PORT, '0.0.0.0', () => console.log(`[SERVER] Port ${PORT}`));
+app.get('/', (req, res) => {
+    res.status(200).json({
+        status: 'ok',
+        connected: Boolean(activeSocket && activeSocket.user),
+        uptime: process.uptime(),
+    });
+});
+app.get('/health', (req, res) => res.status(200).send('OK'));
+app.listen(PORT, '0.0.0.0', () => console.log(`[SERVER] Keep-alive HTTP server on port ${PORT}`));
 
 connectToWhatsApp().catch(err => console.log("[FATAL]", err));
 
@@ -2462,7 +2509,13 @@ process.on('SIGINT', async () => {
 });
 
 // --- KEEP ALIVE ---
-const RENDER_URL = "https://dazbot.onrender.com";
-setInterval(async () => {
-    try { await fetch(RENDER_URL); } catch (e) { }
-}, 5 * 60 * 1000);
+// Auto-ping interne pour garder l'instance éveillée sur Render Free.
+// Configurer via la variable d'env `RENDER_URL` (ex: https://mon-bot.onrender.com).
+// Si non définie, le ping est désactivé (utile sur VPS classique).
+const RENDER_URL = process.env.RENDER_URL || config.renderUrl || '';
+if (RENDER_URL) {
+    console.log(`[KEEP-ALIVE] Auto-ping toutes les 5 min sur ${RENDER_URL}`);
+    setInterval(async () => {
+        try { await fetch(RENDER_URL); } catch (e) { }
+    }, 5 * 60 * 1000);
+}

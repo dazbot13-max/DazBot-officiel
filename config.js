@@ -52,9 +52,25 @@ module.exports = {
         "St4y F0cuS, St4Y D3termi4t3 🫠🤲🧎"
     ],
     
-    // Supabase credentials for remote auth state storage 
-    supabaseUrl: "", 
-    supabaseKey: "", 
+    // Supabase credentials for remote auth state storage. Si renseignés (ou
+    // définis via env vars `SUPABASE_URL` / `SUPABASE_KEY`), la session
+    // WhatsApp est sauvegardée dans une table Postgres au lieu du dossier
+    // `auth_info_baileys/`. Indispensable sur Render Free / Railway dont le
+    // filesystem est éphémère. Sur VPS classique (Contabo, DO), laisse vide.
+    supabaseUrl: "",
+    supabaseKey: "",
+
+    // URL publique de l'instance Render / Railway (ex: "https://mon-bot.onrender.com").
+    // Si définie (ici ou via env var `RENDER_URL`), le bot s'auto-ping toutes
+    // les 5 min pour empêcher Render Free de l'endormir après 15 min
+    // d'inactivité. Laisse vide sur VPS classique.
+    renderUrl: "",
+
+    // Préfixe unique pour les clés Supabase quand on héberge plusieurs bots
+    // (un par ami) sur le même projet Supabase. Chaque instance doit avoir
+    // sa propre valeur (ex: "ami_jean", "ami_marie") via env var `BOT_ID` ou
+    // ce champ. Vide = mode mono-bot (clés non préfixées, rétrocompatible).
+    botId: "",
 
     // Anti-Delete settings
     antiDeleteEnabled: true,

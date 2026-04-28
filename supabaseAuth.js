@@ -1,6 +1,18 @@
 const { BufferJSON, initAuthCreds, proto } = require('@whiskeysockets/baileys');
 
-module.exports = async (supabase, tableName = 'whatsapp_auth') => {
+// Stockage de la session WhatsApp dans une table Supabase Postgres.
+//
+// Pour héberger plusieurs bots dans le même projet Supabase (ex: un par ami),
+// passer un `botId` unique par instance : toutes les clés seront préfixées par
+// `<botId>:` dans la colonne `id`. Sans `botId`, on conserve l'ancien schéma
+// (clés nues) pour la compatibilité ascendante.
+module.exports = async (supabase, options = {}) => {
+    // Rétrocompatibilité : si l'appelant passe une string en 2ème argument,
+    // on l'interprète comme l'ancien `tableName`.
+    if (typeof options === 'string') options = { tableName: options };
+    const { tableName = 'whatsapp_auth', botId = '' } = options;
+    const prefix = botId ? `${botId}:` : '';
+    const k = (id) => `${prefix}${id}`;
     // Write data to Supabase
     const writeData = async (data, id) => {
         try {
@@ -9,7 +21,7 @@ module.exports = async (supabase, tableName = 'whatsapp_auth') => {
             
             const { error } = await supabase
                 .from(tableName)
-                .upsert({ id, data: parsedData }, { onConflict: 'id' });
+                .upsert({ id: k(id), data: parsedData }, { onConflict: 'id' });
             
             if (error) console.error('[Supabase Auth] Erreur de sauvegarde', id, error.message);
         } catch (e) {
@@ -23,7 +35,7 @@ module.exports = async (supabase, tableName = 'whatsapp_auth') => {
             const { data, error } = await supabase
                 .from(tableName)
                 .select('data')
-                .eq('id', id)
+                .eq('id', k(id))
                 .maybeSingle();
 
             if (error || !data) return null;
@@ -38,7 +50,7 @@ module.exports = async (supabase, tableName = 'whatsapp_auth') => {
     // Remove data from Supabase
     const removeData = async (id) => {
         try {
-            await supabase.from(tableName).delete().eq('id', id);
+            await supabase.from(tableName).delete().eq('id', k(id));
         } catch (error) {
             console.error('[Supabase Auth] Delete Error', error);
         }
