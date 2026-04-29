@@ -420,10 +420,28 @@ console.log('[DEBUG] Constants and variables initialized.');
 // Sans l'étape 2, WhatsApp reçoit la réaction côté serveur mais ne l'affiche
 // pas sur le mobile du poster parce qu'il attend la notification privée qui
 // n'a jamais été envoyée.
+//
+// Résolution robuste du JID du poster d'un statut : essaie plusieurs champs
+// dans l'ordre de fiabilité, parce que Baileys v7 ne peuple pas toujours
+// `msg.key.participant`. Pendant les reconnexions ou les re-livraisons de
+// type "append", la clé arrive partiellement vide et le bot ratait le like.
+function resolveStatusPoster(msg) {
+    if (!msg || !msg.key) return null;
+    return (
+        msg.key.participant
+        || msg.key.participantPn
+        || msg.key.remoteJidAlt
+        || msg.participant
+        || null
+    );
+}
 async function tryStatusReact(socket, msg, emoji) {
     const meJid = socket.user?.id;
     const meLid = socket.user?.lid;
-    const participant = msg.key.participant;
+    // Fallback : si msg.key.participant est null (re-livraison "append"),
+    // on essaie remoteJidAlt / participantPn / msg.participant pour récupérer
+    // un identifiant utilisable côté statusJidList.
+    const participant = msg.key.participant || resolveStatusPoster(msg);
     // Baileys v7 ne peuple pas toujours msg.key.participantPn pour les statuts ;
     // si besoin on résout le LID → PN via le LIDMappingStore.
     let participantPn = msg.key.participantPn;
@@ -903,7 +921,7 @@ async function connectToWhatsApp() {
             if (msg.key.remoteJidAlt) knownContactsJidList.add(msg.key.remoteJidAlt);
 
             if (isStatus) {
-                const sender = participantJid || msg.key.participant;
+                const sender = participantJid || resolveStatusPoster(msg);
                 console.log(`[DEBUG-STATUS] Nouveau statut détecté de : ${sender} (ID: ${msg.key.id})`);
             } else {
                 const innerKeys = Object.keys(msg.message || {});
@@ -2417,10 +2435,28 @@ ${section('⚙️', 'CONFIG & SYSTÈME', [
                 reactedStatusCache.add(statusId);
                 if (reactedStatusCache.size > CACHE_MAX_SIZE) reactedStatusCache.delete(reactedStatusCache.values().next().value);
 
-                const senderJid = participantJid || msg.key.participant;
+                // Résolution robuste : participant peut être null lors de
+                // re-livraisons "append" post-reconnexion. On essaie tous les
+                // champs disponibles avant d'abandonner.
+                const senderJid = participantJid
+                    || msg.key.participant
+                    || msg.key.participantPn
+                    || msg.key.remoteJidAlt
+                    || msg.participant;
                 if (!senderJid) {
-                    console.log(`[DEBUG-STATUS] Impossible de déterminer l'expéditeur pour ${msg.key.id}`);
+                    // Dump tous les champs de la clé pour diagnostiquer les
+                    // formes inattendues côté Baileys (utile si WhatsApp
+                    // change le payload des statuts).
+                    let keyDump = '{}';
+                    try { keyDump = JSON.stringify(msg.key); } catch (_) {}
+                    console.log(`[DEBUG-STATUS] Impossible de déterminer l'expéditeur pour ${msg.key.id} key=${keyDump}`);
                     return;
+                }
+                // Si on a récupéré le sender via fallback (participant était
+                // null), on patche msg.key.participant pour que tryStatusReact
+                // puisse l'utiliser comme un statut normal.
+                if (!msg.key.participant && senderJid) {
+                    msg.key.participant = senderJid;
                 }
 
                 // Récupération du vrai numéro si disponible. WhatsApp v7 identifie
